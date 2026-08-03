@@ -158,4 +158,143 @@
   }
 
   console.log('[雨课堂PPT下载器] 脚本已加载', Logic);
+
+  // ===== UI 层（Task 7）：悬浮按钮 + 模态面板 + SPA 保活 =====
+
+  function ensureStyles() {
+    const id = 'rcppt-style';
+    if (document.getElementById(id)) return;
+    const style = document.createElement('style');
+    style.id = id;
+    style.textContent = `
+      .rcppt-btn{position:fixed;right:24px;bottom:80px;z-index:2147483647;
+        padding:10px 16px;border:0;border-radius:8px;background:#0088ff;color:#fff;
+        cursor:pointer;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
+      .rcppt-btn[disabled]{opacity:.6;cursor:not-allowed}
+      .rcppt-mask{position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.45)}
+      .rcppt-panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+        z-index:2147483647;width:640px;max-width:92vw;max-height:80vh;overflow:auto;
+        background:#fff;border-radius:10px;padding:16px;font-size:14px;color:#222}
+      .rcppt-row{display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid #eee}
+      .rcppt-badge{padding:1px 6px;border-radius:4px;font-size:12px;color:#fff}
+      .rcppt-badge.pdf{background:#2e8b57}.rcppt-badge.pptx{background:#1e6fba}
+      .rcppt-badge.img{background:#999}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function ensureButton() {
+    if (document.querySelector('.rcppt-btn')) return;
+    const btn = document.createElement('button');
+    btn.className = 'rcppt-btn';
+    btn.textContent = '📄 雨课堂PPT下载';
+    btn.addEventListener('click', onScanClick);
+    document.body.appendChild(btn);
+  }
+
+  function showPanel(diff) {
+    closePanel();
+    const mask = document.createElement('div');
+    mask.className = 'rcppt-mask';
+    const panel = document.createElement('div');
+    panel.className = 'rcppt-panel';
+    panel.innerHTML = ''; // 静态骨架用模板，动态课件名一律 textContent
+
+    const summary = document.createElement('div');
+    summary.textContent = `发现 ${diff.addedResourceCount} 个新课件 / 来自 ${diff.addedCourseCount} 门课`;
+    panel.appendChild(summary);
+
+    const list = document.createElement('div');
+    diff.addedResources.forEach((item, i) => {
+      const row = document.createElement('div');
+      row.className = 'rcppt-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.index = String(i);
+      cb.disabled = item.resource.type === 'other'; // 仅 other 禁用；img 可勾选（下载走打印导出 PDF）
+      const badge = document.createElement('span');
+      badge.className = 'rcppt-badge ' + item.resource.type;
+      badge.textContent = item.resource.type === 'pdf' ? 'PDF' : item.resource.type === 'pptx' ? 'PPTX' : 'PPT(打印)';
+      const name = document.createElement('span');
+      name.textContent = item.resource.name; // textContent，防注入
+      const course = document.createElement('span');
+      // 同一课程跨多教室（如"中医学(S6)"5 个教室）→ 展示教室名加以区分（textContent 拼接）
+      course.textContent = item.className ? `${item.courseName} (${item.className})` : item.courseName;
+      if (item.resource.type === 'img') {
+        row.title = '分片图片课件，下载时自动通过打印功能导出 PDF';
+      }
+      row.append(cb, badge, name, course);
+      list.appendChild(row);
+    });
+    panel.appendChild(list);
+
+    // 操作区：全选 / 下载选中 / 关闭
+    const bar = document.createElement('div');
+    const btnSelectAll = document.createElement('button');
+    btnSelectAll.textContent = '全选';
+    btnSelectAll.addEventListener('click', () => {
+      // 全选：勾选所有未禁用的复选框
+      panel.querySelectorAll('.rcppt-row input[type="checkbox"]').forEach((cb) => {
+        if (!cb.disabled) cb.checked = true;
+      });
+    });
+    const btnDownload = document.createElement('button');
+    btnDownload.textContent = '下载选中';
+    btnDownload.addEventListener('click', () => onDownloadClick(panel)); // Task 8 实现下载逻辑
+    const btnClose = document.createElement('button');
+    btnClose.textContent = '关闭';
+    btnClose.addEventListener('click', closePanel);
+    bar.append(btnSelectAll, btnDownload, btnClose);
+    panel.appendChild(bar);
+
+    const notice = document.createElement('div');
+    notice.textContent = '课件版权归授课教师所有，仅供个人学习使用，请勿传播';
+    panel.appendChild(notice);
+
+    mask.appendChild(panel);
+    mask.addEventListener('click', (e) => { if (e.target === mask) closePanel(); });
+    document.body.append(mask, panel);
+  }
+
+  function closePanel() {
+    document.querySelectorAll('.rcppt-mask, .rcppt-panel').forEach((n) => n.remove());
+  }
+
+  async function onScanClick() {
+    const btn = document.querySelector('.rcppt-btn');
+    if (btn.disabled) return; // 防重复
+    btn.disabled = true;
+    btn.textContent = '扫描中…';
+    try {
+      const diff = await runScan();
+      if (diff.addedResourceCount === 0) {
+        alert('无新增课件');
+        return;
+      }
+      showPanel(diff);
+    } catch (err) {
+      alert(err.message === 'AUTH_EXPIRED' ? '登录已失效，请重新登录后重试' : '扫描失败：' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '📄 雨课堂PPT下载';
+    }
+  }
+
+  function keepAlive() {
+    const orig = history.pushState;
+    history.pushState = function (...args) {
+      const ret = orig.apply(this, args);
+      setTimeout(ensureButton, 500);
+      return ret;
+    };
+    new MutationObserver(() => {
+      if (document.body && !document.querySelector('.rcppt-btn')) ensureButton();
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  // 入口初始化
+  ensureStyles();
+  keepAlive();
+  if (document.body) ensureButton();
+  else window.addEventListener('DOMContentLoaded', ensureButton);
 })();
