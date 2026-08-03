@@ -1,0 +1,9 @@
+{
+  "name": "rainclassroom-ppt-downloader",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node build.js",
+    "test": "node --test"
+  }
+}
