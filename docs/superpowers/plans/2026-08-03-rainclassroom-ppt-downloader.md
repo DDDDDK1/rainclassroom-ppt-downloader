@@ -20,7 +20,11 @@
 
 ---
 
-### Task 1: 接口调研与抓包（前置，人工协作）
+### Task 1: 接口调研与抓包（✅ 已完成 2026-08-03）
+
+> 结果：接口全部打通，无动态加密签名（sign = 课程详情接口的 `course_sign`，静态 token）。完整契约见 `docs/apis.md`。本次抓包额外确认：雨课堂 PPT 课件为**分片图片流**（无原始文件），需通过打印页 `/web/print` 输出 PDF；全自动 PDF 已用 playwright `page.pdf()` 验证成功（111 页 A4 横向）。
+
+**Files:**
 
 **Files:**
 - Create: `docs/apis.md`（接口契约清单）
@@ -449,30 +453,90 @@ git commit -m "feat: 实现类型识别与增量对比纯逻辑"
 
 ```js
 // 接口地址集中常量（依据 docs/apis.md 的 Task 1 实际抓包结果修改）
+// ===== 接口地址常量（依据 docs/apis.md）=====
 const API = {
-  listCourses: '<docs/apis.md 课程列表 URL>',
-  listResources: '<docs/apis.md 课件列表 URL>'
+  courses: '/v2/api/web/courses/list',
+  classroom: '/v2/api/web/classrooms/',
+  chapter: '/mooc-api/v1/lms/learn/course/chapter',
+  leafInfo: '/edu_admin/leaf_level_info/',
+  review: '/api/v3/classroom-report/student/review',
+  ppt: '/api/v3/classroom-report/student/ppt'
 };
 
-const Api = {
-  async fetchCourses() {
-    // 依据 docs/apis.md：method、入参、分页遍历、响应字段映射
-    // 示例：分页拉取全部课程
-    const all = [];
-    let page = 1;
-    for (;;) {
-      const data = await fetchJson(API.listCourses, buildCoursesPayload(page));
-      all.push(...extractCourses(data));
-      if (!hasMore(data)) break;
-      page += 1;
-      await sleep(500);
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+function readCsrf() {
+  const m = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+  return m ? m[1] : '';
+}
+
+async function fetchJson(url, extra = {}) {
+  const res = await fetch(url, {
+    method: 'GET',
+    credentials: 'include',
+    headers: {
+      'x-csrftoken': readCsrf(),
+      'xtbz': 'ykt',
+      ...(extra.headers || {})
     }
-    return all;
+  });
+  if (res.status === 401) throw Object.assign(new Error('AUTH_EXPIRED'), { code: 401 });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+const Api = {
+  // 1. 课程列表（我听的课），一次性返回全部
+  async fetchCourses() {
+    const data = await fetchJson(API.courses + '?identity=2');
+    return (data.data.list || []).map((c) => ({
+      classroomId: c.classroom_id,
+      courseId: c.course.id,
+      courseName: c.course.name,
+      className: c.name,
+      teacher: c.teacher && c.teacher.name,
+      role: c.role
+    }));
   },
 
-  async fetchResources(courseId) {
-    const data = await fetchJson(API.listResources, buildResourcesPayload(courseId));
-    return extractResources(data);
+  // 2. 课程详情 → course_sign / free_sku_id / uv_id
+  async fetchClassroom(classroomId) {
+    const data = await fetchJson(API.classroom + classroomId + '?role=5');
+    return data.data;
+  },
+
+  // 3. 课件列表（chapter → leaf[]）
+  async fetchChapter(classroomId, sign, uvId) {
+    const url = `${API.chapter}?cid=${classroomId}&sign=${sign}&term=latest&uv_id=${uvId}&classroom_id=${classroomId}`;
+    const data = await fetchJson(url, { headers: { 'x-client': 'web', 'terminal-type': 'web' } });
+    const leaves = [];
+    for (const ch of data.data.course_chapter || []) {
+      for (const leaf of ch.section_leaf_list || []) {
+        leaves.push({ name: leaf.name, leafId: leaf.id, leafType: leaf.leaf_type, leafinfoId: leaf.leafinfo_id });
+      }
+    }
+    return leaves;
+  },
+
+  // 4. leaf → courseware_id
+  async fetchLeafInfo(classroomId, leafId, uvId) {
+    const url = `${API.leafInfo}?leaf_level_id=${leafId}&no_loading=false&term=latest&uv_id=${uvId}&classroom_id=${classroomId}`;
+    const data = await fetchJson(url);
+    return data; // { activity_id, courseware_id, classroom_id }
+  },
+
+  // 5. review → timelineList[]（含 presentationId）
+  async fetchReview(coursewareId) {
+    const url = `${API.review}?lesson_id=${coursewareId}&front_time=${Date.now()}`;
+    const data = await fetchJson(url);
+    return data.data;
+  },
+
+  // 6. PPT 分片 → slideList[]
+  async fetchPpt(coursewareId, presentationId) {
+    const url = `${API.ppt}?lesson_id=${coursewareId}&presentationId=${presentationId}&front_time=${Date.now()}`;
+    const data = await fetchJson(url);
+    return data.data.slideList || [];
   }
 };
 ```
@@ -480,28 +544,11 @@ const Api = {
 - [ ] **Step 2: 补齐通用请求/工具函数**
 
 ```js
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-
-function fetchJson(url, payload) {
-  const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
-  if (payload) opts.body = JSON.stringify(payload);
-  return fetch(url, opts).then(async (res) => {
-    if (res.status === 401) throw Object.assign(new Error('AUTH_EXPIRED'), { code: 401 });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.json();
-  });
-}
-
-// 以下三个映射函数依据 docs/apis.md 的实际字段实现：
-function buildCoursesPayload(page) { /* TODO 依据契约 */ }
-function extractCourses(data) { /* TODO 依据契约 */ }
-function buildResourcesPayload(courseId) { /* TODO 依据契约 */ }
-function extractResources(data) { /* TODO 依据契约 */ }
-```
+helper（`sleep` / `readCsrf` / `fetchJson`）已并入 Step 1。所有接口为 GET，依赖 Cookie 自动携带登录态；`x-csrftoken` 从 `document.cookie` 读取。`uv_id` 在 fetchClassroom 响应里可取得（`data.uv_id`），传给 fetchChapter/fetchLeafInfo。
 
 - [ ] **Step 3: 浏览器手动验证**
 
-在控制台执行 `Api.fetchCourses()`，确认返回课程数组；对第一门课执行 `Api.fetchResources(courseId)`，确认课件对象含 resourceId/name/type/url 字段。若有签名加密 → 停止回退。
+在控制台依次执行：`await Api.fetchCourses()` → 取第一门 `classroomId` → `await Api.fetchClassroom(classroomId)` 拿 `course_sign` → `await Api.fetchChapter(classroomId, sign, uv_id)` 拿 leaf → `await Api.fetchLeafInfo(classroomId, leafId, uv_id)` 拿 `courseware_id` → `await Api.fetchReview(coursewareId)` 拿 `presentationId` → `await Api.fetchPpt(coursewareId, presentationId)` 拿 slideList。每步返回结构应与 `docs/apis.md` 一致。若有 401 提示登录失效。
 
 - [ ] **Step 4: 重新构建并提交**
 
@@ -539,7 +586,18 @@ async function runScan() {
   const fetched = [];
 
   for (const course of courses) {
-    const resources = await Api.fetchResources(course.courseId);
+    // 每课：课程详情(拿 course_sign/uv_id) → chapter(拿 leaf)
+    const classroom = await Api.fetchClassroom(course.classroomId);
+    const leaves = await Api.fetchChapter(course.classroomId, classroom.course_sign, classroom.uv_id);
+    const resources = leaves
+      .filter((l) => l.leafType === 8) // 线上学习/课堂 PPT
+      .map((l) => ({
+        resourceId: String(l.leafId),
+        name: l.name,
+        type: 'img',        // 课堂 PPT 为图片流 → 打印导出 PDF
+        url: null,
+        leafInfo: l
+      }));
     fetched.push({ ...course, resources });
     await sleep(800); // 逐课串行 + 请求间隔
   }
@@ -644,17 +702,16 @@ function showPanel(diff) {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.dataset.index = String(i);
-    cb.disabled = item.resource.type === 'img'; // 图片流禁用
+    cb.disabled = item.resource.type === 'other'; // 仅 other 禁用
     const badge = document.createElement('span');
     badge.className = 'rcppt-badge ' + item.resource.type;
-    badge.textContent = item.resource.type === 'pdf' ? 'PDF' : item.resource.type === 'pptx' ? 'PPTX' : '图片流';
+    badge.textContent = item.resource.type === 'pdf' ? 'PDF' : item.resource.type === 'pptx' ? 'PPTX' : 'PPT(打印)';
     const name = document.createElement('span');
     name.textContent = item.resource.name; // textContent，防注入
     const course = document.createElement('span');
     course.textContent = item.courseName;
     if (item.resource.type === 'img') {
-      row.title = '仅图片预览，无法下载源文件';
-    }
+      row.title = '分片图片课件，下载时自动通过打印功能导出 PDF';
     row.append(cb, badge, name, course);
     list.appendChild(row);
   });
@@ -746,7 +803,7 @@ git commit -m "feat: 实现UI悬浮按钮与模态面板"
 
 ---
 
-### Task 8: 下载器（逐个下载）
+### Task 8: 下载器 + 打印模块（直链下载 / 图片流 PDF）
 
 **Files:**
 - Modify: `src/app.js`
@@ -766,12 +823,17 @@ async function onDownloadClick(panel) {
   });
 
   for (const row of targets) {
-    const url = row.dataset.url;
+    const type = row.dataset.type;
     const name = row.dataset.name;
-    if (!url) { markRow(row, '无下载地址', '#c00'); continue; }
     markRow(row, '下载中…', '#08f');
     try {
-      await triggerDownload(url, name);
+      if (type === 'img') {
+        await Print.exportPdf(row);          // 图片流 → 打印模块（CDP 全自动/半自动回退）
+      } else if (row.dataset.url) {
+        await triggerDownload(row.dataset.url, name);
+      } else {
+        throw new Error('无下载地址');
+      }
       markRow(row, '✓', '#2e8b57');
     } catch (e) {
       markRow(row, '失败', '#c00');
@@ -805,22 +867,99 @@ function markRow(row, text, color) {
 }
 ```
 
-- [ ] **Step 2: 在 Task 7 的渲染代码中为可下载行补 `dataset.url` / `dataset.name`**
+- [ ] **Step 2: 在 Task 7 的渲染代码中为行补下载/打印所需 dataset；img 行不禁用复选框**
 
 在 `showPanel` 的 row 构建处追加：
 
 ```js
 row.dataset.url = item.resource.url || '';
 row.dataset.name = item.resource.name;
+row.dataset.type = item.resource.type;
+row.dataset.classroomId = item.courseId;           // classroom_id
+row.dataset.leafId = item.resource.resourceId;     // leaf id
 ```
 
-- [ ] **Step 3: 浏览器验证 + 提交**
+同时把 Task 7 渲染里的 `cb.disabled = item.resource.type === 'img';` 改为不禁用（图片流走打印模块，可勾选），并将类型徽标文案改为：`pdf→PDF`、`pptx→PPTX`、`img→PPT(打印)`。
+
+- [ ] **Step 3: 打印模块（图片流 → PDF）**
+
+```js
+function uvIdFromCookie() {
+  const m = document.cookie.match(/(?:^|;\s*)uv_id=([^;]+)/);
+  return m ? m[1] : '';
+}
+
+const Print = {
+  async cdpAvailable() {
+    try {
+      const res = await fetch('http://localhost:9222/json/version', { cache: 'no-store' });
+      return res.ok;
+    } catch (e) { return false; }
+  },
+
+  async exportPdf(row) {
+    const classroomId = row.dataset.classroomId;
+    const leafId = row.dataset.leafId;
+    const name = row.dataset.name;
+    // 懒加载：leaf → courseware_id → presentationId → slideList
+    const leafInfo = await Api.fetchLeafInfo(classroomId, leafId, uvIdFromCookie());
+    const review = await Api.fetchReview(leafInfo.courseware_id);
+    const presentationId = review.timelineList[0].presentationId;
+    const slideList = await Api.fetchPpt(leafInfo.courseware_id, presentationId);
+
+    // 写入 rain_print 并打开打印页（数据经 localStorage 传递，无 URL 参数）
+    localStorage.setItem('rain_print', JSON.stringify({
+      Slides: slideList.map((s) => ({ id: s.id, index: s.index, cover: s.cover, doubtCount: 0, collectCount: 0 })),
+      Width: 1920, Height: 1080, Title: name, printType: 'ppt'
+    }));
+    const win = window.open('/web/print', '_blank');
+
+    if (await this.cdpAvailable()) {
+      await this.cdpPrintToPdf(name);   // CDP 全自动
+    } else {
+      await sleep(2500);
+      if (win) win.print();             // 半自动回退：用户另存为 PDF
+    }
+  },
+
+  async cdpPrintToPdf(name) {
+    const targets = await (await fetch('http://localhost:9222/json')).json();
+    const target = targets.find((t) => t.type === 'page' && t.url.includes('/web/print'));
+    if (!target) throw new Error('未找到打印页 tab');
+    const ws = new WebSocket(target.webSocketDebuggerUrl);
+    const base64 = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('CDP 超时')), 30000);
+      ws.onopen = () => ws.send(JSON.stringify({
+        id: 1, method: 'Page.printToPDF',
+        params: { printBackground: true, landscape: true, preferCSSPageSize: true }
+      }));
+      ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id === 1) { clearTimeout(timer); resolve(m.result.data); } };
+      ws.onerror = () => { clearTimeout(timer); reject(new Error('CDP 连接失败')); };
+    });
+    ws.close();
+    // base64 → Blob 下载
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = (name || 'courseware') + '.pdf';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+};
+```
+
+> ⚠️ CDP 验证点：① 从 https 页面 `fetch('http://localhost:9222/...')` 与 `new WebSocket('ws://localhost:9222/...')` 的混合内容——Chrome 对 localhost 有豁免但需实测；若被阻止，用户需以 `--allow-insecure-localhost` 启动 Chrome。② `Page.printToPDF` 前需确认打印页已渲染完成（可先 `sleep(2500)` 或经 CDP `Runtime.evaluate` 轮询 `document.querySelectorAll('img').length`）。任何一步失败 → 回退半自动 `win.print()`。
+
+- [ ] **Step 4: 浏览器验证 + 提交**
 
 Run: `npm run build`
-验证：勾选 2 个以上可下载课件，逐个成功下载；浏览器如弹"允许多个文件下载"提示，属于预期行为。
+验证：勾选多个课件——pdf/pptx 直链逐个下载；img 课件在有 CDP 时自动出 PDF、无 CDP 时弹出打印框；多文件下载弹窗提示属预期行为。
 ```bash
 git add src/app.js
-git commit -m "feat: 实现逐个下载器"
+git commit -m "feat: 实现下载器与打印模块（CDP全自动/半自动）"
 ```
 
 ---
