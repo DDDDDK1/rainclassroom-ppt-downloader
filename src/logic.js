@@ -21,7 +21,9 @@ const RCLogic = (function () {
   }
 
   function upsertCourse(cache, course) {
-    const courses = cache.courses.filter((c) => c.courseId !== course.courseId);
+    const courses = cache.courses.filter(
+      (c) => !(c.courseId === course.courseId && c.classroomId === course.classroomId)
+    );
     courses.push(course);
     return { version: cache.version, courses };
   }
@@ -44,7 +46,7 @@ const RCLogic = (function () {
 
     for (const fetched of fetchedCourses) {
       const existingCourse = existingCache.courses.find(
-        (c) => c.courseId === fetched.courseId
+        (c) => c.courseId === fetched.courseId && c.classroomId === fetched.classroomId
       );
       const knownIds = new Set((existingCourse ? existingCourse.resources : []).map((r) => r.resourceId));
 
@@ -57,6 +59,8 @@ const RCLogic = (function () {
         addedResources.push({
           courseId: fetched.courseId,
           courseName: fetched.courseName,
+          classroomId: fetched.classroomId,
+          className: fetched.className,
           resource: { ...resource, type, scanTime: Date.now() }
         });
       }

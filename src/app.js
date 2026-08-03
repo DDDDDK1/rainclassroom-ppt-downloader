@@ -128,6 +128,7 @@
           name: l.name,
           type: 'img',        // 课堂 PPT 为图片流 → 打印导出 PDF
           url: null,
+          classroomId: course.classroomId,
           leafInfo: l
         }));
       fetched.push({ ...course, resources });
@@ -141,6 +142,8 @@
     for (const course of fetched) {
       const normalized = {
         courseId: course.courseId,
+        classroomId: course.classroomId,
+        className: course.className,
         courseName: course.courseName,
         resources: course.resources
           .filter((r) => Logic.classifyResource(r) !== 'other')
