@@ -104,5 +104,55 @@
     }
   };
 
+  const STORE_KEY = 'rcppt_cache_v1';
+
+  const Store = {
+    load() { return Logic.parseCache(GM_getValue(STORE_KEY, '')); },
+    save(cache) { GM_setValue(STORE_KEY, Logic.serializeCache(cache)); },
+    clear() { GM_setValue(STORE_KEY, ''); }
+  };
+
+  async function runScan() {
+    const cache = Store.load();
+    const courses = await Api.fetchCourses();
+    const fetched = [];
+
+    for (const course of courses) {
+      // 每课：课程详情(拿 course_sign/uv_id) → chapter(拿 leaf)
+      const classroom = await Api.fetchClassroom(course.classroomId);
+      const leaves = await Api.fetchChapter(course.classroomId, classroom.course_sign, classroom.uv_id);
+      const resources = leaves
+        .filter((l) => l.leafType === 8) // 线上学习/课堂 PPT
+        .map((l) => ({
+          resourceId: String(l.leafId),
+          name: l.name,
+          type: 'img',        // 课堂 PPT 为图片流 → 打印导出 PDF
+          url: null,
+          leafInfo: l
+        }));
+      fetched.push({ ...course, resources });
+      await sleep(800); // 逐课串行 + 请求间隔
+    }
+
+    const diff = Logic.diffCourses(cache, fetched);
+
+    // 同步更新缓存（幂等：全部成功后写入）
+    let next = cache;
+    for (const course of fetched) {
+      const normalized = {
+        courseId: course.courseId,
+        courseName: course.courseName,
+        resources: course.resources
+          .filter((r) => Logic.classifyResource(r) !== 'other')
+          .map((r) => ({ ...r, type: Logic.classifyResource(r), scanTime: Date.now() })),
+        scanTime: Date.now()
+      };
+      next = Logic.upsertCourse(next, normalized);
+    }
+    Store.save(next);
+
+    return diff;
+  }
+
   console.log('[雨课堂PPT下载器] 脚本已加载', Logic);
 })();
