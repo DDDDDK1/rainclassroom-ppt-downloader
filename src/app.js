@@ -160,6 +160,7 @@
         fetched.push({ ...course, resources });
         await sleep(800); // 逐课串行 + 请求间隔
       } catch (err) {
+        if (err.code === 401) throw err; // 401 是全局会话信号，中止整轮 → onScanClick AUTH_EXPIRED 提示
         failed.push({ courseName: course.courseName, classroomId: course.classroomId, error: err.message });
         console.warn('[雨课堂PPT下载器] 课程扫描失败，已跳过：' + course.courseName + ' (' + course.classroomId + ') — ' + err.message);
       }
