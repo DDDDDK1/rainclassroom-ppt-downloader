@@ -9,8 +9,22 @@ const RCLogic = (function () {
   function parseCache(raw) {
     try {
       const data = JSON.parse(raw);
-      if (!data || !Array.isArray(data.courses)) return emptyCache();
-      return data;
+      // 版本不符（Task 3 Minor）或结构不符 → 空缓存自愈
+      if (!data || data.version !== STORE_VERSION || !Array.isArray(data.courses)) return emptyCache();
+      // 归一化（Task 6 Minor）：丢弃无 courseId 脏条目；无 classroomId 的旧格式孤儿条目
+      // 尽力从资源级 classroomId 补齐，否则丢弃（下次扫描重新收录）
+      const courses = [];
+      for (const c of data.courses) {
+        if (!c || !c.courseId) continue;
+        let classroomId = c.classroomId;
+        if (!classroomId && Array.isArray(c.resources)) {
+          const withK = c.resources.find((r) => r && r.classroomId);
+          if (withK) classroomId = withK.classroomId;
+        }
+        if (!classroomId) continue;
+        courses.push({ ...c, classroomId, resources: Array.isArray(c.resources) ? c.resources : [] });
+      }
+      return { version: STORE_VERSION, courses };
     } catch (e) {
       return emptyCache();
     }

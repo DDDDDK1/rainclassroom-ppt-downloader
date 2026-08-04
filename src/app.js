@@ -46,13 +46,36 @@
     });
     if (res.status === 401) throw Object.assign(new Error('AUTH_EXPIRED'), { code: 401 });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.json();
+    const data = await res.json();
+    // 业务错误码检查（Task 5 Minor）：HTTP ok 但业务码非成功 → 抛明确信息
+    if (data && typeof data.errcode === 'number' && data.errcode !== 0) {
+      throw new Error('业务错误 errcode=' + data.errcode + (data.msg ? '：' + data.msg : ''));
+    }
+    if (data && typeof data.code === 'number' && data.code !== 0) {
+      throw new Error('业务错误 code=' + data.code + (data.msg ? '：' + data.msg : ''));
+    }
+    return data;
+  }
+
+  // 重试封装（Task 9 Step 1）：401 不重试；其余错误 sleep(2000) 后重试，最多 retries 次
+  async function fetchWithRetry(url, payload, retries = 3) {
+    let lastErr;
+    for (let i = 0; i < retries; i++) {
+      try {
+        return await fetchJson(url, payload);
+      } catch (err) {
+        if (err.code === 401) throw err; // 登录失效不重试
+        lastErr = err;
+        if (i < retries - 1) await sleep(2000); // 延时2s重试
+      }
+    }
+    throw lastErr;
   }
 
   const Api = {
     // 1. 课程列表（我听的课），一次性返回全部
     async fetchCourses() {
-      const data = await fetchJson(API.courses + '?identity=2');
+      const data = await fetchWithRetry(API.courses + '?identity=2');
       return (data.data.list || []).map((c) => ({
         classroomId: c.classroom_id,
         courseId: c.course.id,
@@ -65,14 +88,14 @@
 
     // 2. 课程详情 → course_sign / free_sku_id / uv_id
     async fetchClassroom(classroomId) {
-      const data = await fetchJson(API.classroom + classroomId + '?role=5');
+      const data = await fetchWithRetry(API.classroom + classroomId + '?role=5');
       return data.data;
     },
 
     // 3. 课件列表（chapter → leaf[]）
     async fetchChapter(classroomId, sign, uvId) {
       const url = `${API.chapter}?cid=${classroomId}&sign=${sign}&term=latest&uv_id=${uvId}&classroom_id=${classroomId}`;
-      const data = await fetchJson(url, { headers: { 'x-client': 'web', 'terminal-type': 'web' } });
+      const data = await fetchWithRetry(url, { headers: { 'x-client': 'web', 'terminal-type': 'web' } });
       const leaves = [];
       for (const ch of data.data.course_chapter || []) {
         for (const leaf of ch.section_leaf_list || []) {
@@ -85,21 +108,21 @@
     // 4. leaf → courseware_id
     async fetchLeafInfo(classroomId, leafId, uvId) {
       const url = `${API.leafInfo}?leaf_level_id=${leafId}&no_loading=false&term=latest&uv_id=${uvId}&classroom_id=${classroomId}`;
-      const data = await fetchJson(url);
+      const data = await fetchWithRetry(url);
       return data; // { activity_id, courseware_id, classroom_id }
     },
 
     // 5. review → timelineList[]（含 presentationId）
     async fetchReview(coursewareId) {
       const url = `${API.review}?lesson_id=${coursewareId}&front_time=${Date.now()}`;
-      const data = await fetchJson(url);
+      const data = await fetchWithRetry(url);
       return data.data;
     },
 
     // 6. PPT 分片 → slideList[]
     async fetchPpt(coursewareId, presentationId) {
       const url = `${API.ppt}?lesson_id=${coursewareId}&presentationId=${presentationId}&front_time=${Date.now()}`;
-      const data = await fetchJson(url);
+      const data = await fetchWithRetry(url);
       return data.data.slideList || [];
     }
   };
@@ -116,23 +139,30 @@
     const cache = Store.load();
     const courses = await Api.fetchCourses();
     const fetched = [];
+    const failed = [];
 
     for (const course of courses) {
       // 每课：课程详情(拿 course_sign/uv_id) → chapter(拿 leaf)
-      const classroom = await Api.fetchClassroom(course.classroomId);
-      const leaves = await Api.fetchChapter(course.classroomId, classroom.course_sign, classroom.uv_id);
-      const resources = leaves
-        .filter((l) => l.leafType === 8) // 线上学习/课堂 PPT
-        .map((l) => ({
-          resourceId: String(l.leafId),
-          name: l.name,
-          type: 'img',        // 课堂 PPT 为图片流 → 打印导出 PDF
-          url: null,
-          classroomId: course.classroomId,
-          leafInfo: l
-        }));
-      fetched.push({ ...course, resources });
-      await sleep(800); // 逐课串行 + 请求间隔
+      // 逐课错误隔离（Task 6 Minor）：单课失败记录并跳过，其余课继续
+      try {
+        const classroom = await Api.fetchClassroom(course.classroomId);
+        const leaves = await Api.fetchChapter(course.classroomId, classroom.course_sign, classroom.uv_id);
+        const resources = leaves
+          .filter((l) => l.leafType === 8) // 线上学习/课堂 PPT
+          .map((l) => ({
+            resourceId: String(l.leafId),
+            name: l.name,
+            type: 'img',        // 课堂 PPT 为图片流 → 打印导出 PDF
+            url: null,
+            classroomId: course.classroomId,
+            leafInfo: l
+          }));
+        fetched.push({ ...course, resources });
+        await sleep(800); // 逐课串行 + 请求间隔
+      } catch (err) {
+        failed.push({ courseName: course.courseName, classroomId: course.classroomId, error: err.message });
+        console.warn('[雨课堂PPT下载器] 课程扫描失败，已跳过：' + course.courseName + ' (' + course.classroomId + ') — ' + err.message);
+      }
     }
 
     const diff = Logic.diffCourses(cache, fetched);
@@ -154,7 +184,7 @@
     }
     Store.save(next);
 
-    return diff;
+    return Object.assign(diff, { failed });
   }
 
   console.log('[雨课堂PPT下载器] 脚本已加载', Logic);
@@ -204,6 +234,15 @@
     summary.textContent = `发现 ${diff.addedResourceCount} 个新课件 / 来自 ${diff.addedCourseCount} 门课`;
     panel.appendChild(summary);
 
+    // Task 9：逐课失败提示（详情见控制台 console.warn）
+    if (diff.failed && diff.failed.length) {
+      const warn = document.createElement('div');
+      warn.style.color = '#c00';
+      warn.style.padding = '4px 0';
+      warn.textContent = `${diff.failed.length} 门课扫描失败已跳过，详情见控制台`;
+      panel.appendChild(warn);
+    }
+
     const list = document.createElement('div');
     diff.addedResources.forEach((item, i) => {
       const row = document.createElement('div');
@@ -247,10 +286,17 @@
     const btnDownload = document.createElement('button');
     btnDownload.textContent = '下载选中';
     btnDownload.addEventListener('click', () => onDownloadClick(panel)); // Task 8 实现下载逻辑
+    const btnClear = document.createElement('button');
+    btnClear.textContent = '清空缓存';
+    btnClear.addEventListener('click', () => {
+      Store.clear(); // Task 9 Step 2：暴露"清空缓存"入口（缓存损坏/异常时可重置）
+      closePanel();
+      alert('已清空缓存，下次扫描将全量重新检测');
+    });
     const btnClose = document.createElement('button');
     btnClose.textContent = '关闭';
     btnClose.addEventListener('click', closePanel);
-    bar.append(btnSelectAll, btnDownload, btnClose);
+    bar.append(btnSelectAll, btnDownload, btnClear, btnClose);
     panel.appendChild(bar);
 
     const notice = document.createElement('div');
@@ -266,6 +312,8 @@
     document.querySelectorAll('.rcppt-mask, .rcppt-panel').forEach((n) => n.remove());
   }
 
+  let consecutiveScanErrors = 0; // Task 9 Step 3：连续失败计数（接口可能已变更）
+
   async function onScanClick() {
     const btn = document.querySelector('.rcppt-btn');
     if (btn.disabled) return; // 防重复
@@ -273,13 +321,23 @@
     btn.textContent = '扫描中…';
     try {
       const diff = await runScan();
-      if (diff.addedResourceCount === 0) {
+      consecutiveScanErrors = 0;
+      // 无新增但整体成功 → 仍提示；有失败课则展示面板（含失败提示）
+      if (diff.addedResourceCount === 0 && !(diff.failed && diff.failed.length)) {
         alert('无新增课件');
         return;
       }
       showPanel(diff);
     } catch (err) {
-      alert(err.message === 'AUTH_EXPIRED' ? '登录已失效，请重新登录后重试' : '扫描失败：' + err.message);
+      if (err.message === 'AUTH_EXPIRED') {
+        consecutiveScanErrors = 0;
+        alert('登录已失效，请重新登录后重试');
+      } else {
+        consecutiveScanErrors += 1;
+        console.error('[雨课堂PPT下载器] 扫描失败', err);
+        const hint = consecutiveScanErrors >= 2 ? '接口可能已变更，请在控制台查看详情。' : '';
+        alert(hint + '扫描失败：' + err.message);
+      }
     } finally {
       btn.disabled = false;
       btn.textContent = '📄 雨课堂PPT下载';
@@ -383,9 +441,10 @@
           throw e;                          // 打印页被弹窗拦截 → 如实标失败
         }
       }
-      // 半自动回退：用户另存为 PDF
+      // 半自动回退：用户另存为 PDF（win 为 null 即弹窗被拦截 → 如实抛错，与 CDP 回退分支一致）
       await sleep(2500);
       if (win) win.print();
+      else throw new Error('打印页被浏览器拦截，请允许弹窗后重试');
     },
 
     // CDP 全自动：经 localhost:9222 WebSocket 调 Page.printToPDF → base64 → Blob 下载
@@ -396,16 +455,28 @@
       const ws = new WebSocket(target.webSocketDebuggerUrl);
       const base64 = await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('CDP 超时')), 30000);
+        let sendTimer = null; // Task 9：跟踪内层 2500ms send 定时器，ws 关闭时 clearTimeout 防止 InvalidStateError
         ws.onopen = () => {
           // 等待 /web/print 打印页渲染完成（简报⚠️：printToPDF 前需确认页面已渲染，避免空白/缺页 PDF）
           // 图片渲染约需 1-3s，取 2500ms；整体仍受外层 30s CDP 超时兜底，不引入新悬挂
-          setTimeout(() => ws.send(JSON.stringify({
+          sendTimer = setTimeout(() => ws.send(JSON.stringify({
             id: 1, method: 'Page.printToPDF',
             params: { printBackground: true, landscape: true, preferCSSPageSize: true }
           })), 2500);
         };
-        ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id === 1) { clearTimeout(timer); resolve(m.result.data); } };
-        ws.onerror = () => { clearTimeout(timer); reject(new Error('CDP 连接失败')); };
+        ws.onmessage = (e) => {
+          const m = JSON.parse(e.data);
+          if (m.id === 1) {
+            clearTimeout(timer);
+            if (m.result && m.result.data) resolve(m.result.data);
+            else reject(new Error('CDP 打印失败：' + ((m.error && m.error.message) || '无返回数据')));
+          }
+        };
+        ws.onerror = () => {
+          clearTimeout(timer);
+          if (sendTimer) clearTimeout(sendTimer);
+          reject(new Error('CDP 连接失败'));
+        };
       });
       ws.close();
       // base64 → Blob 下载

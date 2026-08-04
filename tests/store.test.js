@@ -20,6 +20,47 @@ test('parseCache 序列化往返一致', () => {
   assert.deepEqual(restored, c);
 });
 
+test('parseCache 版本不符 → 空缓存自愈', () => {
+  const raw = JSON.stringify({ version: 99, courses: [{ courseId: 'c1', classroomId: 'k1' }] });
+  assert.deepEqual(L.parseCache(raw), L.emptyCache());
+});
+
+test('parseCache 旧格式孤儿条目（无 classroomId 且资源也无）被丢弃', () => {
+  const raw = JSON.stringify({
+    version: 1,
+    courses: [{ courseId: 'c1', courseName: '高数', resources: [], scanTime: 1 }]
+  });
+  const c = L.parseCache(raw);
+  assert.equal(c.courses.length, 0);
+  // 正常条目不受影响
+  const raw2 = JSON.stringify({
+    version: 1,
+    courses: [
+      { courseId: 'c1', courseName: '高数', resources: [], scanTime: 1 },
+      { courseId: 'c2', classroomId: 'k2', courseName: '英语', resources: [], scanTime: 1 }
+    ]
+  });
+  const c2 = L.parseCache(raw2);
+  assert.equal(c2.courses.length, 1);
+  assert.equal(c2.courses[0].classroomId, 'k2');
+});
+
+test('parseCache 孤儿条目可从资源级 classroomId 补齐', () => {
+  const raw = JSON.stringify({
+    version: 1,
+    courses: [{
+      courseId: 'c1', courseName: '高数',
+      resources: [{ resourceId: 'r1', classroomId: 'k1' }],
+      scanTime: 1
+    }]
+  });
+  const c = L.parseCache(raw);
+  assert.equal(c.courses.length, 1);
+  assert.equal(c.courses[0].classroomId, 'k1');
+  // 资源数组保留
+  assert.equal(c.courses[0].resources.length, 1);
+});
+
 test('upsertCourse 新增课程', () => {
   const cache = L.emptyCache();
   const course = { courseId: 'c1', classroomId: 'k1', courseName: '高数', resources: [], scanTime: 1 };
