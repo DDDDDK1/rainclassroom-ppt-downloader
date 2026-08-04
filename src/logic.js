@@ -84,6 +84,40 @@ const RCLogic = (function () {
     return { addedResources, addedCourseCount, addedResourceCount };
   }
 
+  // 浏览窗口：把课程级选择展开为具体文件、与文件级选择合并去重
+  function collectSelection(cache, courseRefs, resourceRefs) {
+    const result = [];
+    const seen = new Set();
+    const push = (course, resource) => {
+      const key = `${course.courseId}:${course.classroomId}:${resource.resourceId}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push({
+        courseId: course.courseId,
+        classroomId: course.classroomId,
+        courseName: course.courseName,
+        className: course.className,
+        resource
+      });
+    };
+    (courseRefs || []).forEach((ref) => {
+      const course = cache.courses.find(
+        (c) => c.courseId === ref.courseId && c.classroomId === ref.classroomId
+      );
+      if (!course) return;
+      (course.resources || []).forEach((r) => push(course, r));
+    });
+    (resourceRefs || []).forEach((ref) => {
+      const course = cache.courses.find(
+        (c) => c.courseId === ref.courseId && c.classroomId === ref.classroomId
+      );
+      if (!course) return;
+      const resource = (course.resources || []).find((r) => r.resourceId === ref.resourceId);
+      if (resource) push(course, resource);
+    });
+    return result;
+  }
+
   return {
     emptyCache,
     parseCache,
@@ -91,6 +125,7 @@ const RCLogic = (function () {
     upsertCourse,
     classifyResource,
     diffCourses,
+    collectSelection,
     // 后续任务填充：buildCache
   };
 })();
