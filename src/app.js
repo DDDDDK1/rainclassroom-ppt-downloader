@@ -396,10 +396,14 @@
       const ws = new WebSocket(target.webSocketDebuggerUrl);
       const base64 = await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('CDP 超时')), 30000);
-        ws.onopen = () => ws.send(JSON.stringify({
-          id: 1, method: 'Page.printToPDF',
-          params: { printBackground: true, landscape: true, preferCSSPageSize: true }
-        }));
+        ws.onopen = () => {
+          // 等待 /web/print 打印页渲染完成（简报⚠️：printToPDF 前需确认页面已渲染，避免空白/缺页 PDF）
+          // 图片渲染约需 1-3s，取 2500ms；整体仍受外层 30s CDP 超时兜底，不引入新悬挂
+          setTimeout(() => ws.send(JSON.stringify({
+            id: 1, method: 'Page.printToPDF',
+            params: { printBackground: true, landscape: true, preferCSSPageSize: true }
+          })), 2500);
+        };
         ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id === 1) { clearTimeout(timer); resolve(m.result.data); } };
         ws.onerror = () => { clearTimeout(timer); reject(new Error('CDP 连接失败')); };
       });
