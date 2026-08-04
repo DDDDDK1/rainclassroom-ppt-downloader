@@ -633,7 +633,7 @@
 
   // 并发拉取全部页面（上限 5），逐页失败隔离；返回 { pages, failed }
   async function fetchSlidePages(slideList, onProgress) {
-    const pages = [];
+    const results = new Array(slideList.length).fill(null);
     let failed = 0;
     let done = 0;
     let next = 0;
@@ -644,7 +644,7 @@
         const i = next++;
         if (i >= total) return;
         try {
-          pages.push(await normalizeSlidePage(await fetchSlideBytes(slideList[i].cover)));
+          results[i] = await normalizeSlidePage(await fetchSlideBytes(slideList[i].cover));
         } catch (err) {
           failed++;
           console.warn('[雨课堂PPT下载器] 第 ' + (i + 1) + '/' + total + ' 页拉取失败：' + (err.message || err));
@@ -654,6 +654,7 @@
       }
     }
     await Promise.all(Array.from({ length: Math.min(limit, total) }, () => worker()));
+    const pages = results.filter(Boolean);
     if (!pages.length) throw new Error('全部 ' + total + ' 页拉取失败');
     return { pages, failed };
   }
