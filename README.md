@@ -21,7 +21,11 @@
 3. 点击「＋」（新建脚本）按钮，删除编辑器中的默认内容，粘贴本脚本的全部代码。
 4. 保存（Ctrl+S / Cmd+S），脚本即自动启用。
 
-> 也可以直接安装本仓库 `rainclassroom-ppt-downloader.user.js` 文件（通过 Tampermonkey 的「从文件导入」或将文件拖入扩展页面）。
+> **推荐**：通过上方「新建脚本 → 粘贴」方式安装。Tampermonkey 编辑器以 UTF-8 保存脚本，中文界面不会乱码。
+>
+> **若中文界面乱码**：在中文版 Windows 上，直接双击本地 `rainclassroom-ppt-downloader.user.js`、或经浏览器以 `file://` 打开该文件安装时，Chrome 可能按 GBK 解码无编码声明的文本，导致按钮等中文显示为乱码（如「长江」变成「闀挎睙」）。此时请删除脚本，改用「新建脚本 → 粘贴」重新安装。
+>
+> 发布到 GitHub 后，`@updateURL` 指向 raw.githubusercontent.com（响应自带 `charset=utf-8`），可放心通过该链接直接安装与更新。
 
 ## 使用步骤
 
