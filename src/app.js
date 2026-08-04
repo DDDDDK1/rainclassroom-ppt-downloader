@@ -241,6 +241,7 @@
   // ===== 浏览窗口（统一中心）状态 =====
   let browseCache = null;               // 浏览窗口的缓存快照（内存中，不写回）
   let browseNewKeys = new Set();        // 会话级「新」徽标：'courseId:classroomId:resourceId'
+  let scanning = false;                 // 全局扫描互斥：两个「扫描」按钮共用
 
   function keyOf(course, resource) {
     return course.courseId + ':' + course.classroomId + ':' + resource.resourceId;
@@ -370,6 +371,7 @@
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.dataset.index = String(i);
+      cb.disabled = resource.type === 'other';
       const badge = document.createElement('span');
       badge.className = 'rcppt-badge ' + resource.type;
       badge.textContent = resource.type === 'pdf' ? 'PDF' : resource.type === 'pptx' ? 'PPTX' : 'PPT(打印)';
@@ -467,7 +469,8 @@
 
   // 窗口内扫描：复用 runScan → 刷新列表 + 会话「新」徽标 + 横幅
   async function scanAndRefresh(panel, btn) {
-    if (btn.disabled) return;
+    if (scanning || btn.disabled) return;
+    scanning = true;
     btn.disabled = true;
     btn.textContent = '扫描中…';
     try {
@@ -493,6 +496,7 @@
         alert(hint + '扫描失败：' + err.message);
       }
     } finally {
+      scanning = false;
       btn.disabled = false;
       btn.textContent = '扫描';
     }
@@ -534,6 +538,7 @@
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       const r = f.resource;
+      if (!r) { fail++; if (mark) mark(i, '失败', '#c00'); continue; }
       if (mark) mark(i, '下载中…', '#08f');
       try {
         if (r.type === 'img') {
