@@ -1,0 +1,12 @@
+# 参考文档/素材，不入库
+reference/
+
+# Claude Code 配置
+.claude/
+
+# Playwright 浏览器痕迹（快照/日志，非源码）
+.playwright-mcp/
+
+# 构建产物 rainclassroom-ppt-downloader.user.js 有意入库：
+# @updateURL 指向 raw.githubusercontent 的该文件，供 GitHub 直接安装/更新；
+# 改动 src/ 后需 npm run build 并同步提交产物。
