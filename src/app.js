@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         长江雨课堂PPT下载器
 // @namespace    https://github.com/DDDDDK1/rainclassroom-ppt-downloader
-// @version      1.1.0
+// @version      1.2.0
 // @description  便捷下载长江雨课堂中的PPT课件（增量检测）
 // @author       DDDDDK1
 // @homepageURL  https://github.com/DDDDDK1/rainclassroom-ppt-downloader
@@ -166,7 +166,7 @@
           .map((l) => ({
             resourceId: String(l.leafId),
             name: l.name,
-            type: 'img',        // 课堂 PPT 为图片流 → 打印导出 PDF
+            type: 'img',        // 课堂 PPT 为图片流 → 前端合成 PDF 导出
             url: null,
             classroomId: course.classroomId,
             leafInfo: l
@@ -374,7 +374,7 @@
       cb.disabled = resource.type === 'other';
       const badge = document.createElement('span');
       badge.className = 'rcppt-badge ' + resource.type;
-      badge.textContent = resource.type === 'pdf' ? 'PDF' : resource.type === 'pptx' ? 'PPTX' : 'PPT(打印)';
+      badge.textContent = resource.type === 'pdf' ? 'PDF' : resource.type === 'pptx' ? 'PPTX' : 'PPT(PDF)';
       const name = document.createElement('span');
       name.textContent = resource.name;
       row.append(cb, badge, name);
@@ -517,7 +517,7 @@
 
   let consecutiveScanErrors = 0; // Task 9 Step 3：连续失败计数（接口可能已变更）
 
-  // ===== 下载器 + 打印模块（Task 8）：直链下载 / 图片流走打印导出 PDF =====
+  // ===== 下载器（Task 8）：直链下载 / 图片流走前端合成 PDF =====
 
   function triggerDownload(url, name) {
     return new Promise((resolve) => {
@@ -542,14 +542,19 @@
       if (mark) mark(i, '下载中…', '#08f');
       try {
         if (r.type === 'img') {
-          await Print.exportPdf({ classroomId: f.classroomId, leafId: r.resourceId, name: r.name });
+          const skipped = await exportSlidesPdf(
+            { classroomId: f.classroomId, leafId: r.resourceId, name: r.name },
+            (done, total) => { if (mark) mark(i, '拉取图片 ' + done + '/' + total, '#08f'); }
+          );
+          ok++;
+          if (mark) mark(i, skipped > 0 ? '✓（' + skipped + ' 页失败）' : '✓', '#2e8b57');
         } else if (r.url) {
           await triggerDownload(r.url, r.name);
+          ok++;
+          if (mark) mark(i, '✓', '#2e8b57');
         } else {
           throw new Error('无下载地址');
         }
-        ok++;
-        if (mark) mark(i, '✓', '#2e8b57');
       } catch (e) {
         fail++;
         console.warn('[雨课堂PPT下载器] 下载失败：' + r.name + ' — ' + e.message);
@@ -571,98 +576,104 @@
     status.style.color = color;
   }
 
-  // ===== 打印模块（图片流 → PDF）：CDP 全自动 / 半自动 win.print() 回退 =====
+  // ===== 图片流 → 前端合成 PDF（完全替换旧打印页/CDP）：fetch 封面 → 手写 PDF → Blob 下载 =====
 
   function uvIdFromCookie() {
     const m = document.cookie.match(/(?:^|;\s*)uv_id=([^;]+)/);
     return m ? m[1] : '';
   }
 
-  const Print = {
-    // 探测本机是否有带 --remote-debugging-port=9222 的 Chrome
-    async cdpAvailable() {
+  // 拉取单页封面字节。关键：credentials:'omit'（CDN 允许跨域但拒绝带凭据）；20s 超时 + 重试一次
+  async function fetchSlideBytes(cover) {
+    let lastErr;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
       try {
-        const res = await fetch('http://localhost:9222/json/version', { cache: 'no-store' });
-        return res.ok;
-      } catch (e) { return false; }
-    },
-
-    async exportPdf({ classroomId, leafId, name }) {
-      // 懒加载：leaf → courseware_id → presentationId → slideList
-      const leafInfo = await Api.fetchLeafInfo(classroomId, leafId, uvIdFromCookie());
-      const review = await Api.fetchReview(leafInfo.courseware_id);
-      const presentationId = review.timelineList[0].presentationId;
-      const slideList = await Api.fetchPpt(leafInfo.courseware_id, presentationId);
-
-      // 写入 rain_print 并打开打印页（数据经 localStorage 传递，无 URL 参数）
-      localStorage.setItem('rain_print', JSON.stringify({
-        Slides: slideList.map((s) => ({ id: s.id, index: s.index, cover: s.cover, doubtCount: 0, collectCount: 0 })),
-        Width: 1920, Height: 1080, Title: name, printType: 'ppt'
-      }));
-      const win = window.open('/web/print', '_blank');
-
-      if (await this.cdpAvailable()) {
-        try {
-          await this.cdpPrintToPdf(name); // CDP 全自动
-          if (win) win.close();           // 关闭打印页，防止 tab 泄漏
-          return;                         // 自动导出成功 → 行标 ✓
-        } catch (e) {
-          // CDP 失败 → 回退半自动（简报⚠️：任何一步失败回退 win.print()）
-          await sleep(2500);
-          if (win) { win.print(); return; } // 回退成功：用户另存为 PDF
-          throw e;                          // 打印页被弹窗拦截 → 如实标失败
-        }
+        const res = await fetch(cover, { mode: 'cors', credentials: 'omit', signal: controller.signal });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return await res.blob();
+      } catch (err) {
+        lastErr = err && err.name === 'AbortError' ? new Error('拉取超时') : err;
+        if (attempt === 0) await sleep(1000);
+      } finally {
+        clearTimeout(timer);
       }
-      // 半自动回退：用户另存为 PDF（win 为 null 即弹窗被拦截 → 如实抛错，与 CDP 回退分支一致）
-      await sleep(2500);
-      if (win) win.print();
-      else throw new Error('打印页被浏览器拦截，请允许弹窗后重试');
-    },
+    }
+    throw lastErr;
+  }
 
-    // CDP 全自动：经 localhost:9222 WebSocket 调 Page.printToPDF → base64 → Blob 下载
-    async cdpPrintToPdf(name) {
-      const targets = await (await fetch('http://localhost:9222/json')).json();
-      const target = targets.filter((t) => t.type === 'page' && t.url.includes('/web/print')).at(-1);
-      if (!target) throw new Error('未找到打印页 tab');
-      const ws = new WebSocket(target.webSocketDebuggerUrl);
-      const base64 = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('CDP 超时')), 30000);
-        let sendTimer = null; // Task 9：跟踪内层 2500ms send 定时器，ws 关闭时 clearTimeout 防止 InvalidStateError
-        ws.onopen = () => {
-          // 等待 /web/print 打印页渲染完成（简报⚠️：printToPDF 前需确认页面已渲染，避免空白/缺页 PDF）
-          // 图片渲染约需 1-3s，取 2500ms；整体仍受外层 30s CDP 超时兜底，不引入新悬挂
-          sendTimer = setTimeout(() => ws.send(JSON.stringify({
-            id: 1, method: 'Page.printToPDF',
-            params: { printBackground: true, landscape: true, preferCSSPageSize: true }
-          })), 2500);
-        };
-        ws.onmessage = (e) => {
-          const m = JSON.parse(e.data);
-          if (m.id === 1) {
-            clearTimeout(timer);
-            if (m.result && m.result.data) resolve(m.result.data);
-            else reject(new Error('CDP 打印失败：' + ((m.error && m.error.message) || '无返回数据')));
-          }
-        };
-        ws.onerror = () => {
-          clearTimeout(timer);
-          if (sendTimer) clearTimeout(sendTimer);
-          reject(new Error('CDP 连接失败'));
-        };
+  // 归一化为可直接嵌入 PDF 的 JPEG 字节 + 尺寸：JPEG 直取（SOF 解析），其余经 canvas 转 JPEG
+  async function normalizeSlidePage(blob) {
+    if (blob.type === 'image/jpeg') {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const dim = Logic.jpegDimensions(bytes);
+      return { bytes, width: dim.width, height: dim.height };
+    }
+    const url = URL.createObjectURL(blob);
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => reject(new Error('图片解码失败'));
+        im.src = url;
       });
-      ws.close();
-      // base64 → Blob 下载
-      const bin = atob(base64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const blob = new Blob([bytes], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = (name || 'courseware') + '.pdf';
-      document.body.appendChild(a); a.click(); a.remove();
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      const jpeg = await new Promise((resolve, reject) => {
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('canvas 编码失败'))), 'image/jpeg', 0.92);
+      });
+      return { bytes: new Uint8Array(await jpeg.arrayBuffer()), width: img.naturalWidth, height: img.naturalHeight };
+    } finally {
       URL.revokeObjectURL(url);
     }
-  };
+  }
+
+  // 并发拉取全部页面（上限 5），逐页失败隔离；返回 { pages, failed }
+  async function fetchSlidePages(slideList, onProgress) {
+    const results = new Array(slideList.length).fill(null);
+    let failed = 0;
+    let done = 0;
+    let next = 0;
+    const total = slideList.length;
+    const limit = 5;
+    async function worker() {
+      while (true) {
+        const i = next++;
+        if (i >= total) return;
+        try {
+          results[i] = await normalizeSlidePage(await fetchSlideBytes(slideList[i].cover));
+        } catch (err) {
+          failed++;
+          console.warn('[雨课堂PPT下载器] 第 ' + (i + 1) + '/' + total + ' 页拉取失败：' + (err.message || err));
+        }
+        done++;
+        if (onProgress) onProgress(done, total);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, total) }, () => worker()));
+    const pages = results.filter(Boolean);
+    if (!pages.length) throw new Error('全部 ' + total + ' 页拉取失败');
+    return { pages, failed };
+  }
+
+  // 编排：API 懒加载链 → 拉取页面 → 合成 PDF → Blob 下载；返回跳过的失败页数
+  async function exportSlidesPdf({ classroomId, leafId, name }, onProgress) {
+    const leafInfo = await Api.fetchLeafInfo(classroomId, leafId, uvIdFromCookie());
+    const review = await Api.fetchReview(leafInfo.courseware_id);
+    const presentationId = review.timelineList[0].presentationId;
+    const slideList = await Api.fetchPpt(leafInfo.courseware_id, presentationId);
+    if (!slideList || !slideList.length) throw new Error('课件无分片图片');
+    const { pages, failed } = await fetchSlidePages(slideList, onProgress);
+    const pdf = Logic.buildSlidesPdf(pages);
+    const blob = new Blob([pdf], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    await triggerDownload(url, Logic.sanitizeFilename(name) + '.pdf');
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    return failed;
+  }
 
   function keepAlive() {
     const orig = history.pushState;

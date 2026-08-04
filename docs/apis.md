@@ -69,23 +69,23 @@
   - `id` → 页面 ID
   - `index` → 页码
   - `cover` → **该页 PPT 图片 URL**（`https://changjiang-private-qn.yuketang.cn/slide/...`，带 `e=` 过期时间 + `token=` 鉴权）
-- ⚠️ **无原始 PPT/PDF 文件**，只有分片图片 → 通过打印功能导出 PDF（见下）
+- ⚠️ **无原始 PPT/PDF 文件**，只有分片图片 → 前端合成 PDF 导出（见下）
 
-## 7. 打印页（PDF 输出）
+## 7. 图片型课件 → 前端合成 PDF（下载）
 
-- 打印页地址：`/web/print`（无 URL 参数，数据从 localStorage 读取）
-- **数据写入**：`localStorage.setItem('rain_print', JSON.stringify({Slides, Width, Height, Title, printType}))`
-  - `Slides`：由 slideList 构造，每项含 `{id, index, cover, ...}`（实测 111 项对应 111 页）
-  - `Width` / `Height`：PPT 画布尺寸（可省略或取默认）
-  - `Title`：课件名
-- **输出**：页面渲染全部 PPT 页后：
-  - 半自动：`window.print()` → 浏览器打印框 → 用户"另存为 PDF"
-  - 全自动（CDP）：`Page.printToPDF` 直接生成 PDF（需 Chrome 带 `--remote-debugging-port` 启动），回退到半自动
-- 已用 playwright `page.pdf()` 验证：111 页 A4 横向 PDF（16.5MB）输出成功
+图片型课件（`type:'img'`）无原始 PPT/PDF 文件，只有分片图片（见 §6）。脚本在前端逐页拉取完整封面字节，合成为单个 PDF 后自动下载（无弹窗、无外部 Chrome）：
+
+- **API 链**（懒加载，随下载按需请求）：
+  - `fetchLeafInfo(classroomId, leafId, uv_id)`（§4）→ 取 `courseware_id`
+  - `fetchReview(courseware_id)`（§5）→ 取 `timelineList[0].presentationId`
+  - `fetchPpt(courseware_id, presentationId)`（§6）→ 取 `slideList[]`
+- **封面拉取**：对 slideList 每项的 `cover` 用 `fetch(cover, {mode:'cors', credentials:'omit'})`——跨域私有 CDN 允许无凭据读取字节（token 在 URL 内，无需 Cookie）。20s 超时 + 失败重试一次（间隔 1s）；并发上限 5；逐页失败隔离（失败页跳过，PDF 页数 = 成功页数，全部失败才抛错）。
+- **合成**：`Logic.buildSlidesPdf(pages)`——JPEG 字节直嵌（`/Filter /DCTDecode`，免解码），页尺寸统一为第一个成功页，其余页等比缩放居中（铺白底，不拉伸变形）。
+- **下载**：合成 PDF → Blob → 浏览器原生下载 `sanitizeFilename(name) + '.pdf'`（文件名过滤 `\ / : * ? " < > |` 非法字符）。
 
 ## 请求时序（脚本模拟）
 
 ```
 课程列表 → 对每课: 课程详情(拿 course_sign) → chapter(拿 leaf) → 每 leaf: leaf_level_info(拿 courseware_id)
-       → review(拿 presentationId) → ppt(拿 slideList) → 写 rain_print → 打印页 → PDF
+       → review(拿 presentationId) → ppt(拿 slideList) → fetch 封面字节 → buildSlidesPdf 合成 → Blob 下载
 ```
