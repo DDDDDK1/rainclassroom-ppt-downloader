@@ -166,7 +166,7 @@
           .map((l) => ({
             resourceId: String(l.leafId),
             name: l.name,
-            type: 'img',        // 课堂 PPT 为图片流 → 打印导出 PDF
+            type: 'img',        // 课堂 PPT 为图片流 → 前端合成 PDF 导出
             url: null,
             classroomId: course.classroomId,
             leafInfo: l
@@ -374,7 +374,7 @@
       cb.disabled = resource.type === 'other';
       const badge = document.createElement('span');
       badge.className = 'rcppt-badge ' + resource.type;
-      badge.textContent = resource.type === 'pdf' ? 'PDF' : resource.type === 'pptx' ? 'PPTX' : 'PPT(打印)';
+      badge.textContent = resource.type === 'pdf' ? 'PDF' : resource.type === 'pptx' ? 'PPTX' : 'PPT(PDF)';
       const name = document.createElement('span');
       name.textContent = resource.name;
       row.append(cb, badge, name);
@@ -517,7 +517,7 @@
 
   let consecutiveScanErrors = 0; // Task 9 Step 3：连续失败计数（接口可能已变更）
 
-  // ===== 下载器 + 打印模块（Task 8）：直链下载 / 图片流走打印导出 PDF =====
+  // ===== 下载器（Task 8）：直链下载 / 图片流走前端合成 PDF =====
 
   function triggerDownload(url, name) {
     return new Promise((resolve) => {

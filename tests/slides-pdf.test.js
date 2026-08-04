@@ -83,6 +83,28 @@ test('buildSlidesPdf 两页不同尺寸 → 页尺寸统一为第一页', () => 
   assert.match(txt, /q 0\.5 0 0 0\.5 0 0 cm \/Im0 Do Q/); // 16x12 → 0.5 缩放居中
 });
 
+test('buildSlidesPdf 异尺寸居中 → 非零 dx（左右居中，dy=0）', () => {
+  const img = makeJpeg();
+  const pdf = L.buildSlidesPdf([
+    { bytes: img, width: 8, height: 6 },
+    { bytes: img, width: 4, height: 6 }
+  ]);
+  const txt = new TextDecoder().decode(pdf);
+  assert.match(txt, /\/Count 2/);
+  assert.match(txt, /q 1 0 0 1 2 0 cm \/Im0 Do Q/); // 4x6 在 8x6 页内：s=min(8/4,6/6)=1, dx=(8-4)/2=2, dy=0
+});
+
+test('buildSlidesPdf 异尺寸居中 → 非零 dy（垂直居中，dx=0）', () => {
+  const img = makeJpeg();
+  const pdf = L.buildSlidesPdf([
+    { bytes: img, width: 8, height: 6 },
+    { bytes: img, width: 8, height: 3 }
+  ]);
+  const txt = new TextDecoder().decode(pdf);
+  assert.match(txt, /\/Count 2/);
+  assert.match(txt, /q 1 0 0 1 0 1\.5 cm \/Im0 Do Q/); // 8x3 在 8x6 页内：s=min(8/8,6/3)=1, dx=0, dy=(6-3)/2=1.5
+});
+
 test('buildSlidesPdf 空 pages → 抛错', () => {
   assert.throws(() => L.buildSlidesPdf([]), /无可合成页面/);
 });
