@@ -146,6 +146,73 @@ const RCLogic = (function () {
     throw new Error('未找到 JPEG SOF 段');
   }
 
+  // 手写极简 PDF 写入器：每页一张全幅 JPEG，页尺寸统一为 pages[0]
+  function buildSlidesPdf(pages) {
+    if (!Array.isArray(pages) || !pages.length) throw new Error('无可合成页面');
+    const first = pages[0];
+    if (!first || !first.width || !first.height) throw new Error('页面尺寸无效');
+    const pageW = first.width;
+    const pageH = first.height;
+
+    const enc = new TextEncoder();
+    const chunks = [];
+    let offset = 0;
+    const xref = [];
+    const pushStr = (s) => { const u = enc.encode(s); chunks.push(u); offset += u.length; };
+    const pushBytes = (u) => { chunks.push(u); offset += u.length; };
+    const markObj = () => xref.push(offset);
+    const fmt = (n) => Math.round(n * 1000) / 1000;
+
+    pushStr('%PDF-1.4\n');
+    const n = pages.length;
+
+    markObj(); // 1 Catalog
+    pushStr('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+
+    const kids = pages.map((_, p) => `${3 + p * 3} 0 R`).join(' ');
+    markObj(); // 2 Pages
+    pushStr(`2 0 obj\n<< /Type /Pages /Kids [${kids}] /Count ${n} >>\nendobj\n`);
+
+    pages.forEach((pg, p) => {
+      const pageObj = 3 + p * 3, contentObj = pageObj + 1, imgObj = pageObj + 2;
+      const iw = pg.width, ih = pg.height;
+      const content = (iw === pageW && ih === pageH)
+        ? `q ${pageW} 0 0 ${pageH} 0 0 cm /Im0 Do Q\n`
+        : (() => {
+            const s = fmt(Math.min(pageW / iw, pageH / ih));
+            const dx = fmt((pageW - iw * s) / 2);
+            const dy = fmt((pageH - ih * s) / 2);
+            return `q ${s} 0 0 ${s} ${dx} ${dy} cm /Im0 Do Q\n`;
+          })();
+      const contentBytes = enc.encode(content);
+
+      markObj(); // Page
+      pushStr(`${pageObj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageW} ${pageH}] /Resources << /XObject << /Im0 ${imgObj} 0 R >> >> /Contents ${contentObj} 0 R >>\nendobj\n`);
+
+      markObj(); // Contents
+      pushStr(`${contentObj} 0 obj\n<< /Length ${contentBytes.length} >>\nstream\n`);
+      pushBytes(contentBytes);
+      pushStr('\nendstream\nendobj\n');
+
+      markObj(); // Image
+      pushStr(`${imgObj} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${iw} /Height ${ih} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${pg.bytes.length} >>\nstream\n`);
+      pushBytes(pg.bytes);
+      pushStr('\nendstream\nendobj\n');
+    });
+
+    const xrefOffset = offset;
+    let xrefStr = `xref\n0 ${xref.length + 1}\n0000000000 65535 f \n`;
+    xref.forEach((off) => { xrefStr += `${String(off).padStart(10, '0')} 00000 n \n`; });
+    pushStr(xrefStr);
+    pushStr(`trailer\n<< /Size ${xref.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+
+    const total = chunks.reduce((s, u) => s + u.length, 0);
+    const out = new Uint8Array(total);
+    let o = 0;
+    for (const u of chunks) { out.set(u, o); o += u.length; }
+    return out;
+  }
+
   return {
     emptyCache,
     parseCache,
@@ -156,6 +223,7 @@ const RCLogic = (function () {
     collectSelection,
     sanitizeFilename,
     jpegDimensions,
+    buildSlidesPdf,
     // 后续任务填充：buildCache
   };
 })();
