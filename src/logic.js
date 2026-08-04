@@ -118,6 +118,34 @@ const RCLogic = (function () {
     return result;
   }
 
+  // 文件名净化：过滤 Windows/跨平台非法字符（Task：前端合成 PDF）
+  function sanitizeFilename(name) {
+    const s = String(name || '').replace(/[\/\\:*?"<>|]/g, '_').trim();
+    return s || 'courseware';
+  }
+
+  // 解析 JPEG SOF 帧头取宽高（封面为 JPEG 时直嵌 PDF，免解码）
+  function jpegDimensions(bytes) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (b.length < 4 || b[0] !== 0xFF || b[1] !== 0xD8) throw new Error('非 JPEG 文件');
+    let i = 2;
+    while (i + 4 <= b.length) {
+      if (b[i] !== 0xFF) { i++; continue; }
+      const marker = b[i + 1];
+      if (marker === 0xFF || marker === 0x00) { i++; continue; }
+      if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; } // 无长度段
+      const len = (b[i + 2] << 8) | b[i + 3];
+      if (len < 2) { i += 2; continue; }
+      const isSof = marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC;
+      if (isSof) {
+        if (i + 9 > b.length) throw new Error('JPEG SOF 段截断');
+        return { width: (b[i + 7] << 8) | b[i + 8], height: (b[i + 5] << 8) | b[i + 6] };
+      }
+      i += 2 + len;
+    }
+    throw new Error('未找到 JPEG SOF 段');
+  }
+
   return {
     emptyCache,
     parseCache,
@@ -126,6 +154,8 @@ const RCLogic = (function () {
     classifyResource,
     diffCourses,
     collectSelection,
+    sanitizeFilename,
+    jpegDimensions,
     // 后续任务填充：buildCache
   };
 })();
