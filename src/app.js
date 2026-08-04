@@ -223,6 +223,12 @@
       if (item.resource.type === 'img') {
         row.title = '分片图片课件，下载时自动通过打印功能导出 PDF';
       }
+      // Task 8：行 dataset 供下载/打印链路读取（classroomId 用真实 classroom_id，≠ courseId）
+      row.dataset.url = item.resource.url || '';
+      row.dataset.name = item.resource.name;
+      row.dataset.type = item.resource.type;
+      row.dataset.classroomId = item.classroomId;        // 真实 classroom_id
+      row.dataset.leafId = item.resource.resourceId;     // leaf id
       row.append(cb, badge, name, course);
       list.appendChild(row);
     });
@@ -279,6 +285,137 @@
       btn.textContent = '📄 雨课堂PPT下载';
     }
   }
+
+  // ===== 下载器 + 打印模块（Task 8）：直链下载 / 图片流走打印导出 PDF =====
+
+  async function onDownloadClick(panel) {
+    const rows = panel.querySelectorAll('.rcppt-row');
+    const targets = Array.from(rows).filter((row) => {
+      const cb = row.querySelector('input[type=checkbox]');
+      return cb && cb.checked && !cb.disabled;
+    });
+
+    for (const row of targets) {
+      const type = row.dataset.type;
+      const name = row.dataset.name;
+      markRow(row, '下载中…', '#08f');
+      try {
+        if (type === 'img') {
+          await Print.exportPdf(row);          // 图片流 → 打印模块（CDP 全自动/半自动回退）
+        } else if (row.dataset.url) {
+          await triggerDownload(row.dataset.url, name);
+        } else {
+          throw new Error('无下载地址');
+        }
+        markRow(row, '✓', '#2e8b57');
+      } catch (e) {
+        markRow(row, '失败', '#c00');
+      }
+      await sleep(800);
+    }
+  }
+
+  function triggerDownload(url, name) {
+    return new Promise((resolve) => {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name || '';
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(resolve, 200); // 给浏览器处理下载的时间
+    });
+  }
+
+  function markRow(row, text, color) {
+    let status = row.querySelector('.rcppt-status');
+    if (!status) {
+      status = document.createElement('span');
+      status.className = 'rcppt-status';
+      row.appendChild(status);
+    }
+    status.textContent = text;
+    status.style.color = color;
+  }
+
+  // ===== 打印模块（图片流 → PDF）：CDP 全自动 / 半自动 win.print() 回退 =====
+
+  function uvIdFromCookie() {
+    const m = document.cookie.match(/(?:^|;\s*)uv_id=([^;]+)/);
+    return m ? m[1] : '';
+  }
+
+  const Print = {
+    // 探测本机是否有带 --remote-debugging-port=9222 的 Chrome
+    async cdpAvailable() {
+      try {
+        const res = await fetch('http://localhost:9222/json/version', { cache: 'no-store' });
+        return res.ok;
+      } catch (e) { return false; }
+    },
+
+    async exportPdf(row) {
+      const classroomId = row.dataset.classroomId;
+      const leafId = row.dataset.leafId;
+      const name = row.dataset.name;
+      // 懒加载：leaf → courseware_id → presentationId → slideList
+      const leafInfo = await Api.fetchLeafInfo(classroomId, leafId, uvIdFromCookie());
+      const review = await Api.fetchReview(leafInfo.courseware_id);
+      const presentationId = review.timelineList[0].presentationId;
+      const slideList = await Api.fetchPpt(leafInfo.courseware_id, presentationId);
+
+      // 写入 rain_print 并打开打印页（数据经 localStorage 传递，无 URL 参数）
+      localStorage.setItem('rain_print', JSON.stringify({
+        Slides: slideList.map((s) => ({ id: s.id, index: s.index, cover: s.cover, doubtCount: 0, collectCount: 0 })),
+        Width: 1920, Height: 1080, Title: name, printType: 'ppt'
+      }));
+      const win = window.open('/web/print', '_blank');
+
+      if (await this.cdpAvailable()) {
+        try {
+          await this.cdpPrintToPdf(name); // CDP 全自动
+          return;                         // 自动导出成功 → 行标 ✓
+        } catch (e) {
+          // CDP 失败 → 回退半自动（简报⚠️：任何一步失败回退 win.print()）
+          await sleep(2500);
+          if (win) { win.print(); return; } // 回退成功：用户另存为 PDF
+          throw e;                          // 打印页被弹窗拦截 → 如实标失败
+        }
+      }
+      // 半自动回退：用户另存为 PDF
+      await sleep(2500);
+      if (win) win.print();
+    },
+
+    // CDP 全自动：经 localhost:9222 WebSocket 调 Page.printToPDF → base64 → Blob 下载
+    async cdpPrintToPdf(name) {
+      const targets = await (await fetch('http://localhost:9222/json')).json();
+      const target = targets.find((t) => t.type === 'page' && t.url.includes('/web/print'));
+      if (!target) throw new Error('未找到打印页 tab');
+      const ws = new WebSocket(target.webSocketDebuggerUrl);
+      const base64 = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('CDP 超时')), 30000);
+        ws.onopen = () => ws.send(JSON.stringify({
+          id: 1, method: 'Page.printToPDF',
+          params: { printBackground: true, landscape: true, preferCSSPageSize: true }
+        }));
+        ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id === 1) { clearTimeout(timer); resolve(m.result.data); } };
+        ws.onerror = () => { clearTimeout(timer); reject(new Error('CDP 连接失败')); };
+      });
+      ws.close();
+      // base64 → Blob 下载
+      const bin = atob(base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = (name || 'courseware') + '.pdf';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    }
+  };
 
   function keepAlive() {
     const orig = history.pushState;
