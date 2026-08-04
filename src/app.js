@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         长江雨课堂PPT下载器
 // @namespace    https://github.com/DDDDDK1/rainclassroom-ppt-downloader
-// @version      1.1.0
+// @version      1.2.0
 // @description  便捷下载长江雨课堂中的PPT课件（增量检测）
 // @author       DDDDDK1
 // @homepageURL  https://github.com/DDDDDK1/rainclassroom-ppt-downloader
