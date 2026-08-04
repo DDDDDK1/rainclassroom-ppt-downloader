@@ -362,30 +362,20 @@
   // ===== 下载器 + 打印模块（Task 8）：直链下载 / 图片流走打印导出 PDF =====
 
   async function onDownloadClick(panel) {
-    const rows = panel.querySelectorAll('.rcppt-row');
-    const targets = Array.from(rows).filter((row) => {
+    const rows = Array.from(panel.querySelectorAll('.rcppt-row')).filter((row) => {
       const cb = row.querySelector('input[type=checkbox]');
       return cb && cb.checked && !cb.disabled;
     });
-
-    for (const row of targets) {
-      const type = row.dataset.type;
-      const name = row.dataset.name;
-      markRow(row, '下载中…', '#08f');
-      try {
-        if (type === 'img') {
-          await Print.exportPdf(row);          // 图片流 → 打印模块（CDP 全自动/半自动回退）
-        } else if (row.dataset.url) {
-          await triggerDownload(row.dataset.url, name);
-        } else {
-          throw new Error('无下载地址');
-        }
-        markRow(row, '✓', '#2e8b57');
-      } catch (e) {
-        markRow(row, '失败', '#c00');
+    const files = rows.map((row) => ({
+      classroomId: row.dataset.classroomId,
+      resource: {
+        resourceId: row.dataset.leafId,
+        name: row.dataset.name,
+        type: row.dataset.type,
+        url: row.dataset.url
       }
-      await sleep(800);
-    }
+    }));
+    await downloadFiles(files, (i, text, color) => markRow(rows[i], text, color));
   }
 
   function triggerDownload(url, name) {
@@ -399,6 +389,33 @@
       a.remove();
       setTimeout(resolve, 200); // 给浏览器处理下载的时间
     });
+  }
+
+  // 统一下载核心（Task：浏览窗口两级复用）：files 来自 collectSelection 或行 dataset
+  async function downloadFiles(files, mark) {
+    let ok = 0, fail = 0;
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const r = f.resource;
+      if (mark) mark(i, '下载中…', '#08f');
+      try {
+        if (r.type === 'img') {
+          await Print.exportPdf({ classroomId: f.classroomId, leafId: r.resourceId, name: r.name });
+        } else if (r.url) {
+          await triggerDownload(r.url, r.name);
+        } else {
+          throw new Error('无下载地址');
+        }
+        ok++;
+        if (mark) mark(i, '✓', '#2e8b57');
+      } catch (e) {
+        fail++;
+        console.warn('[雨课堂PPT下载器] 下载失败：' + r.name + ' — ' + e.message);
+        if (mark) mark(i, '失败', '#c00');
+      }
+      await sleep(800);
+    }
+    return { ok, fail };
   }
 
   function markRow(row, text, color) {
@@ -428,10 +445,7 @@
       } catch (e) { return false; }
     },
 
-    async exportPdf(row) {
-      const classroomId = row.dataset.classroomId;
-      const leafId = row.dataset.leafId;
-      const name = row.dataset.name;
+    async exportPdf({ classroomId, leafId, name }) {
       // 懒加载：leaf → courseware_id → presentationId → slideList
       const leafInfo = await Api.fetchLeafInfo(classroomId, leafId, uvIdFromCookie());
       const review = await Api.fetchReview(leafInfo.courseware_id);
