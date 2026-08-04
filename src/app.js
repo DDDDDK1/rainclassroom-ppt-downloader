@@ -233,6 +233,7 @@
       .rcppt-count{color:#999;font-size:12px}
       .rcppt-status-line{padding:4px 0;font-size:13px}
       .rcppt-course{cursor:pointer}
+      .rcppt-row input[type=checkbox]{-webkit-appearance:auto;appearance:auto;width:16px;height:16px;margin:0;flex:none;opacity:1;position:static}
     `;
     document.head.appendChild(style);
   }
@@ -356,7 +357,7 @@
     top.className = 'rcppt-browse-top';
     const btnBack = document.createElement('button');
     btnBack.textContent = '← 返回';
-    btnBack.addEventListener('click', renderCourses);
+    btnBack.addEventListener('click', () => renderCourses());
     const title = document.createElement('span');
     title.textContent = course.className ? `${course.courseName} (${course.className})` : course.courseName;
     top.append(btnBack, title);
