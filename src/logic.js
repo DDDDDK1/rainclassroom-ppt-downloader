@@ -45,7 +45,7 @@ const RCLogic = (function () {
   function classifyResource(item) {
     const type = String(item.type || item.file_type || '').toLowerCase();
     const name = String(item.name || '').toLowerCase();
-    if (type === 'pdf' || name.endsWith('.pdf')) return 'pdf';
+    if (type === 'pdf' || (!type && name.endsWith('.pdf'))) return 'pdf';
     if (type === 'pptx' || type === 'ppt' && item.url) return 'pptx';
     // ppt 分片预览（无原始文件）→ 图片流
     if (type === 'ppt' || type === 'image' || type === 'img') return 'img';

@@ -9,6 +9,9 @@ test('classifyResource 识别 pdf / pptx / 图片流 / 其他', () => {
   assert.equal(L.classifyResource({ type: 'ppt' }), 'img'); // ppt 分片预览 → 图片流
   assert.equal(L.classifyResource({ file_type: 'video' }), 'other');
   assert.equal(L.classifyResource({ type: '', url: null }), 'other');
+  assert.equal(L.classifyResource({ type: 'img', name: '第3章课件.pdf' }), 'img'); // C1：显式 img 不被 .pdf 后缀覆写
+  assert.equal(L.classifyResource({ name: '第3章课件.pdf' }), 'pdf'); // 无 type 时后缀兜底仍生效
+  assert.equal(L.classifyResource({ type: 'pdf', name: 'x' }), 'pdf'); // 显式 pdf 仍生效
 });
 
 test('diffCourses 空缓存 → 全部课程视为新增', () => {

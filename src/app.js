@@ -38,26 +38,37 @@
   }
 
   async function fetchJson(url, extra = {}) {
-    const res = await fetch(url, {
-      method: 'GET',
-      credentials: 'include',
-      headers: {
-        'x-csrftoken': readCsrf(),
-        'xtbz': 'ykt',
-        ...(extra.headers || {})
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000); // 20s 请求超时兜底：防 fetch 悬挂永久卡死扫描
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        credentials: 'include',
+        headers: {
+          'x-csrftoken': readCsrf(),
+          'xtbz': 'ykt',
+          ...(extra.headers || {})
+        },
+        signal: controller.signal
+      });
+      if (res.status === 401) throw Object.assign(new Error('AUTH_EXPIRED'), { code: 401 });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      // 业务错误码检查（Task 5 Minor）：HTTP ok 但业务码非成功 → 抛明确信息
+      if (data && typeof data.errcode === 'number' && data.errcode !== 0) {
+        throw new Error('业务错误 errcode=' + data.errcode + (data.msg ? '：' + data.msg : ''));
       }
-    });
-    if (res.status === 401) throw Object.assign(new Error('AUTH_EXPIRED'), { code: 401 });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    // 业务错误码检查（Task 5 Minor）：HTTP ok 但业务码非成功 → 抛明确信息
-    if (data && typeof data.errcode === 'number' && data.errcode !== 0) {
-      throw new Error('业务错误 errcode=' + data.errcode + (data.msg ? '：' + data.msg : ''));
+      if (data && typeof data.code === 'number' && data.code !== 0) {
+        throw new Error('业务错误 code=' + data.code + (data.msg ? '：' + data.msg : ''));
+      }
+      return data;
+    } catch (err) {
+      // AbortError（超时中止）→ 转为明确错误信息，交由 fetchWithRetry 重试
+      if (err && err.name === 'AbortError') throw new Error('请求超时：' + url);
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    if (data && typeof data.code === 'number' && data.code !== 0) {
-      throw new Error('业务错误 code=' + data.code + (data.msg ? '：' + data.msg : ''));
-    }
-    return data;
   }
 
   // 重试封装（Task 9 Step 1）：401 不重试；其余错误 sleep(2000) 后重试，最多 retries 次
@@ -437,6 +448,7 @@
       if (await this.cdpAvailable()) {
         try {
           await this.cdpPrintToPdf(name); // CDP 全自动
+          if (win) win.close();           // 关闭打印页，防止 tab 泄漏
           return;                         // 自动导出成功 → 行标 ✓
         } catch (e) {
           // CDP 失败 → 回退半自动（简报⚠️：任何一步失败回退 win.print()）
@@ -454,7 +466,7 @@
     // CDP 全自动：经 localhost:9222 WebSocket 调 Page.printToPDF → base64 → Blob 下载
     async cdpPrintToPdf(name) {
       const targets = await (await fetch('http://localhost:9222/json')).json();
-      const target = targets.find((t) => t.type === 'page' && t.url.includes('/web/print'));
+      const target = targets.filter((t) => t.type === 'page' && t.url.includes('/web/print')).at(-1);
       if (!target) throw new Error('未找到打印页 tab');
       const ws = new WebSocket(target.webSocketDebuggerUrl);
       const base64 = await new Promise((resolve, reject) => {
