@@ -844,13 +844,15 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     catCb.checked = Settings.load().categorize;
     const catText = document.createElement('span');
     catText.textContent = '按课程自动创建文件夹（课程名（班级名））';
-    catRow.append(catCb, catText);
+    const catHint = document.createElement('span');
+    catHint.className = 'rcppt-count';
+    catRow.append(catCb, catText, catHint);
     catCb.addEventListener('change', () => Settings.save({ categorize: catCb.checked }));
     catSection.append(catLabel, catRow);
     panel.appendChild(catSection);
     SaveDir.load().then((h) => {
-      if (!h) { catCb.disabled = true; catText.style.color = '#999'; }
-    }).catch(() => { catCb.disabled = true; });
+      if (!h) { catCb.disabled = true; catText.style.color = '#999'; catHint.textContent = '需先选择保存目录'; }
+    }).catch(() => { catCb.disabled = true; catHint.textContent = '需先选择保存目录'; });
 
     // 清空缓存
     const cacheSection = document.createElement('div');
@@ -1040,8 +1042,11 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
         } else if (r.url) {
           const filename = directFilename(r.name, r.url, r.type);
           if (dirHandle) {
-            // 目录模式：fetch 写入；CORS 拦截 → 回退原生
-            const blob = await fetchAsBlob(r.url).catch(() => null);
+            // 目录模式：fetch 写入；CORS/网络失败 → 记录原因并回退原生下载（标灰提示，避免误导进了所选目录）
+            const blob = await fetchAsBlob(r.url).catch((e) => {
+              console.warn('[雨课堂PPT下载器] 直链拉取失败，已回退默认目录：' + r.name + ' — ' + (e && e.message || e));
+              return null;
+            });
             if (blob) {
               await deliverBlob(dirHandle, settings, { courseName: f.courseName, className: f.className }, blob, filename);
               ok++;
@@ -1049,7 +1054,7 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
             } else {
               await triggerDownload(r.url, filename);
               ok++;
-              if (mark) mark(i, '✓', '#2e8b57');
+              if (mark) mark(i, '✓（已转默认目录）', '#999');
             }
           } else {
             await triggerDownload(r.url, filename);
