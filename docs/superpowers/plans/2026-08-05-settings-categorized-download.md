@@ -386,7 +386,7 @@ git commit -m "feat: 设置存储层——GM 存分类开关，IndexedDB 存目�
     catCb.type = 'checkbox';
     catCb.checked = Settings.load().categorize;
     const catText = document.createElement('span');
-    catText.textContent = '按课程自动创建文件夹（课程名（班级名））';
+    catText.textContent = '按课程自动创建文件夹';
     catRow.append(catCb, catText);
     catCb.addEventListener('change', () => Settings.save({ categorize: catCb.checked }));
     catSection.append(catLabel, catRow);
