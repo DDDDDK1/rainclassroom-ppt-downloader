@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         长江雨课堂PPT下载器
 // @namespace    https://github.com/DDDDDK1/rainclassroom-ppt-downloader
-// @version      1.2.0
+// @version      1.3.0
 // @description  便捷下载长江雨课堂中的PPT课件（增量检测）
 // @author       DDDDDK1
 // @homepageURL  https://github.com/DDDDDK1/rainclassroom-ppt-downloader
@@ -161,6 +161,19 @@ const RCLogic = (function () {
     throw new Error('未找到 JPEG SOF 段');
   }
 
+  // 分类下载：课程文件夹名（净化后；有班级名时用全角括号拼接）
+  function courseFolderName(courseName, className) {
+    const base = className ? `${courseName}（${className}）` : courseName;
+    return sanitizeFilename(base);
+  }
+
+  // 无文件错误工厂：供下载链路识别「此课堂无文件」
+  function coursewareNoFileError() {
+    const err = new Error('此课堂无文件');
+    err.isNoCourseware = true;
+    return err;
+  }
+
   // 手写极简 PDF 写入器：每页一张全幅 JPEG，页尺寸统一为 pages[0]
   function buildSlidesPdf(pages) {
     if (!Array.isArray(pages) || !pages.length) throw new Error('无可合成页面');
@@ -239,6 +252,8 @@ const RCLogic = (function () {
     sanitizeFilename,
     jpegDimensions,
     buildSlidesPdf,
+    courseFolderName,
+    coursewareNoFileError,
     // 后续任务填充：buildCache
   };
 })();
@@ -382,6 +397,72 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     clear() { GM_setValue(STORE_KEY, ''); }
   };
 
+  // ===== 设置存储：GM 存简单配置，IndexedDB 存目录句柄 =====
+  const SETTINGS_KEY = 'rcppt_settings';
+  const IDB_NAME = 'rcppt';
+  const IDB_STORE = 'settings';
+  const IDB_HANDLE_KEY = 'rcppt_save_dir';
+
+  const Settings = {
+    load() {
+      try {
+        const raw = GM_getValue(SETTINGS_KEY, '');
+        const data = raw ? JSON.parse(raw) : {};
+        return { categorize: Boolean(data.categorize) };
+      } catch (e) {
+        return { categorize: false };
+      }
+    },
+    save(settings) {
+      GM_setValue(SETTINGS_KEY, JSON.stringify({ categorize: Boolean(settings.categorize) }));
+    }
+  };
+
+  function idbOpen() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbGet(key) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function idbSet(key, value) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function idbDelete(key) {
+    const db = await idbOpen();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  const SaveDir = {
+    async load() { return idbGet(IDB_HANDLE_KEY); },
+    async store(handle) { return idbSet(IDB_HANDLE_KEY, handle); },
+    async clear() { return idbDelete(IDB_HANDLE_KEY); }
+  };
+
   async function runScan() {
     const cache = Store.load();
     const courses = await Api.fetchCourses();
@@ -451,7 +532,7 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
       .rcppt-btn[disabled]{opacity:.6;cursor:not-allowed}
       .rcppt-mask{position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.45)}
       .rcppt-panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
-        z-index:2147483647;width:640px;max-width:92vw;max-height:80vh;overflow:auto;
+        z-index:2147483647;width:640px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;
         background:#fff;border-radius:10px;padding:16px;font-size:14px;color:#222}
       .rcppt-row{display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid #eee}
       .rcppt-badge{padding:1px 6px;border-radius:4px;font-size:12px;color:#fff}
@@ -459,8 +540,11 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
       .rcppt-badge.img{background:#999}
       .rcppt-row.selected{background:#e8f3ff;box-shadow:inset 3px 0 0 #0088ff}
       .rcppt-badge.new{background:#f5a623}
-      .rcppt-browse-top{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-weight:600}
+      .rcppt-browse-top{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-weight:600;flex:none}
       .rcppt-browse-top .rcppt-scan{margin-left:auto;font-weight:400}
+      .rcppt-browse-title{margin-right:auto;font-weight:600}
+      .rcppt-list{flex:1;min-height:0;overflow:auto}
+      .rcppt-bottom{flex:none;display:flex;gap:8px;margin-top:12px}
       .rcppt-empty{text-align:center;padding:28px 0;color:#888}
       .rcppt-notice{padding:8px 10px;background:#fff8e1;border:1px solid #ffd54f;border-radius:6px;margin-bottom:8px;color:#6d4c00}
       .rcppt-count{color:#999;font-size:12px}
@@ -498,12 +582,17 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     const top = document.createElement('div');
     top.className = 'rcppt-browse-top';
     const title = document.createElement('span');
+    title.className = 'rcppt-browse-title';
     title.textContent = '📚 已扫描课件';
     const btnScan = document.createElement('button');
     btnScan.className = 'rcppt-scan';
     btnScan.textContent = '扫描';
     btnScan.addEventListener('click', () => scanAndRefresh(panel, btnScan));
-    top.append(title, btnScan);
+    const btnSettings = document.createElement('button');
+    btnSettings.textContent = '⚙';
+    btnSettings.title = '设置';
+    btnSettings.addEventListener('click', renderSettings);
+    top.append(title, btnScan, btnSettings);
     panel.appendChild(top);
 
     if (notice) {
@@ -514,6 +603,8 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     }
 
     if (!browseCache.courses.length) {
+      const list = document.createElement('div');
+      list.className = 'rcppt-list';
       const empty = document.createElement('div');
       empty.className = 'rcppt-empty';
       empty.textContent = '暂无已扫描课件';
@@ -521,9 +612,11 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
       btnStart.className = 'rcppt-scan';
       btnStart.textContent = '开始扫描';
       btnStart.addEventListener('click', () => scanAndRefresh(panel, btnStart));
-      panel.append(empty, btnStart);
+      list.append(empty, btnStart);
+      panel.appendChild(list);
     } else {
       const list = document.createElement('div');
+      list.className = 'rcppt-list';
       browseCache.courses.forEach((course, i) => {
         const row = document.createElement('div');
         row.className = 'rcppt-row rcppt-course';
@@ -551,6 +644,7 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     }
 
     const bar = document.createElement('div');
+    bar.className = 'rcppt-bottom';
     const btnSelectAll = document.createElement('button');
     btnSelectAll.textContent = '全选';
     btnSelectAll.addEventListener('click', () => {
@@ -561,13 +655,10 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     const btnDownload = document.createElement('button');
     btnDownload.textContent = '下载选中';
     btnDownload.addEventListener('click', () => onDownloadSelectedCourses(panel));
-    const btnClear = document.createElement('button');
-    btnClear.textContent = '清空缓存';
-    btnClear.addEventListener('click', onClearCache);
     const btnClose = document.createElement('button');
     btnClose.textContent = '关闭';
     btnClose.addEventListener('click', closePanel);
-    bar.append(btnSelectAll, btnDownload, btnClear, btnClose);
+    bar.append(btnSelectAll, btnDownload, btnClose);
     panel.appendChild(bar);
 
     const noticeFooter = document.createElement('div');
@@ -593,11 +684,17 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     btnBack.textContent = '← 返回';
     btnBack.addEventListener('click', () => renderCourses());
     const title = document.createElement('span');
+    title.className = 'rcppt-browse-title';
     title.textContent = course.className ? `${course.courseName} (${course.className})` : course.courseName;
-    top.append(btnBack, title);
+    const btnSettings = document.createElement('button');
+    btnSettings.textContent = '⚙';
+    btnSettings.title = '设置';
+    btnSettings.addEventListener('click', renderSettings);
+    top.append(btnBack, title, btnSettings);
     panel.appendChild(top);
 
     const list = document.createElement('div');
+    list.className = 'rcppt-list';
     course.resources.forEach((resource, i) => {
       const row = document.createElement('div');
       row.className = 'rcppt-row';
@@ -622,6 +719,8 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
       row.dataset.name = resource.name;
       row.dataset.type = resource.type;
       row.dataset.classroomId = course.classroomId;
+      row.dataset.courseName = course.courseName;
+      row.dataset.className = course.className || '';
       row.dataset.leafId = resource.resourceId;
       cb.addEventListener('change', () => row.classList.toggle('selected', cb.checked));
       list.appendChild(row);
@@ -629,6 +728,7 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     panel.appendChild(list);
 
     const bar = document.createElement('div');
+    bar.className = 'rcppt-bottom';
     const btnSelectAll = document.createElement('button');
     btnSelectAll.textContent = '全选';
     btnSelectAll.addEventListener('click', () => {
@@ -639,13 +739,10 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     const btnDownload = document.createElement('button');
     btnDownload.textContent = '下载选中';
     btnDownload.addEventListener('click', () => onDownloadSelectedFiles(panel));
-    const btnClear = document.createElement('button');
-    btnClear.textContent = '清空缓存';
-    btnClear.addEventListener('click', onClearCache);
     const btnClose = document.createElement('button');
     btnClose.textContent = '关闭';
     btnClose.addEventListener('click', closePanel);
-    bar.append(btnSelectAll, btnDownload, btnClear, btnClose);
+    bar.append(btnSelectAll, btnDownload, btnClose);
     panel.appendChild(bar);
 
     mask.appendChild(panel);
@@ -682,6 +779,8 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     if (!rows.length) { alert('未勾选任何文件'); return; }
     const files = rows.map((row) => ({
       classroomId: row.dataset.classroomId,
+      courseName: row.dataset.courseName,
+      className: row.dataset.className,
       resource: {
         resourceId: row.dataset.leafId,
         name: row.dataset.name,
@@ -698,6 +797,103 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     browseCache = Logic.emptyCache();
     browseNewKeys = new Set();
     renderCourses();
+  }
+
+  function renderSettings() {
+    closePanel();
+    const mask = document.createElement('div');
+    mask.className = 'rcppt-mask';
+    const panel = document.createElement('div');
+    panel.className = 'rcppt-panel';
+    panel.style.width = '440px';
+
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:600;margin-bottom:12px';
+    title.textContent = '⚙ 设置';
+    panel.appendChild(title);
+
+    // 保存目录
+    const dirSection = document.createElement('div');
+    dirSection.style.cssText = 'margin-bottom:16px';
+    const dirLabel = document.createElement('div');
+    dirLabel.textContent = '📂 保存目录';
+    const dirInfo = document.createElement('div');
+    dirInfo.className = 'rcppt-count';
+    dirInfo.textContent = '未选择（下载将保存到浏览器默认目录）';
+    SaveDir.load().then((h) => { if (h) dirInfo.textContent = '当前：' + h.name; }).catch(() => {});
+    const dirBtns = document.createElement('div');
+    const btnPick = document.createElement('button');
+    btnPick.textContent = '选择目录';
+    btnPick.addEventListener('click', onPickDirectory);
+    const btnClearDir = document.createElement('button');
+    btnClearDir.textContent = '清除目录';
+    btnClearDir.addEventListener('click', onClearDirectory);
+    dirBtns.append(btnPick, btnClearDir);
+    dirSection.append(dirLabel, dirInfo, dirBtns);
+    panel.appendChild(dirSection);
+
+    // 分类下载
+    const catSection = document.createElement('div');
+    catSection.style.cssText = 'margin-bottom:16px';
+    const catLabel = document.createElement('div');
+    catLabel.textContent = '🗂 分类下载';
+    const catRow = document.createElement('label');
+    catRow.style.cssText = 'display:flex;align-items:center;gap:8px';
+    const catCb = document.createElement('input');
+    catCb.type = 'checkbox';
+    catCb.checked = Settings.load().categorize;
+    const catText = document.createElement('span');
+    catText.textContent = '按课程自动创建文件夹（课程名（班级名））';
+    catRow.append(catCb, catText);
+    catCb.addEventListener('change', () => Settings.save({ categorize: catCb.checked }));
+    catSection.append(catLabel, catRow);
+    panel.appendChild(catSection);
+    SaveDir.load().then((h) => {
+      if (!h) { catCb.disabled = true; catText.style.color = '#999'; }
+    }).catch(() => { catCb.disabled = true; });
+
+    // 清空缓存
+    const cacheSection = document.createElement('div');
+    cacheSection.style.cssText = 'margin-bottom:16px';
+    const cacheLabel = document.createElement('div');
+    cacheLabel.textContent = '🧹 清空缓存';
+    const btnClear = document.createElement('button');
+    btnClear.textContent = '清空缓存';
+    btnClear.addEventListener('click', onClearCache);
+    cacheSection.append(cacheLabel, btnClear);
+    panel.appendChild(cacheSection);
+
+    // 关闭
+    const bar = document.createElement('div');
+    bar.className = 'rcppt-bottom';
+    const btnClose = document.createElement('button');
+    btnClose.textContent = '关闭';
+    btnClose.addEventListener('click', closePanel);
+    bar.appendChild(btnClose);
+    panel.appendChild(bar);
+
+    mask.appendChild(panel);
+    mask.addEventListener('click', (e) => { if (e.target === mask) closePanel(); });
+    document.body.append(mask, panel);
+  }
+
+  async function onPickDirectory() {
+    if (typeof window.showDirectoryPicker !== 'function') {
+      alert('当前浏览器不支持自定义保存目录（需 Chrome/Edge）');
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker();
+      await SaveDir.store(handle);
+      renderSettings(); // 重渲染刷新「当前：目录名」
+    } catch (e) {
+      if (e && e.name !== 'AbortError') alert('选择目录失败：' + (e.message || e));
+    }
+  }
+
+  async function onClearDirectory() {
+    await SaveDir.clear();
+    renderSettings();
   }
 
   // 窗口内扫描：复用 runScan → 刷新列表 + 会话「新」徽标 + 横幅
@@ -765,9 +961,67 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     });
   }
 
-  // 统一下载核心（Task：浏览窗口两级复用）：files 来自 collectSelection 或行 dataset
+  // 直链文件名：从 URL 推导；无扩展名按类型补全（修复待办 #7）
+  function urlBase(url) {
+    try {
+      const u = new URL(url);
+      const last = u.pathname.split('/').filter(Boolean).pop() || '';
+      return decodeURIComponent(last);
+    } catch (e) { return ''; }
+  }
+  function directFilename(name, url, type) {
+    let base = Logic.sanitizeFilename(name || urlBase(url) || 'courseware');
+    if (!/\.(pdf|pptx|ppt)$/i.test(base)) base += type === 'pptx' ? '.pptx' : '.pdf';
+    return base;
+  }
+
+  async function fetchAsBlob(url) {
+    const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.blob();
+  }
+
+  // 目录句柄是否可用（含授权）；不可用返回 null（无 showDirectoryPicker / 无句柄 / 授权被拒）
+  async function saveDirReady() {
+    if (typeof window.showDirectoryPicker !== 'function') return null;
+    let handle;
+    try { handle = await SaveDir.load(); } catch (e) { return null; }
+    if (!handle) return null;
+    try {
+      const opts = { mode: 'readwrite' };
+      let perm = await handle.queryPermission(opts);
+      if (perm !== 'granted') perm = await handle.requestPermission(opts);
+      return perm === 'granted' ? handle : null;
+    } catch (e) { return null; }
+  }
+
+  // FileSystem 写入：分类时先建课程子文件夹
+  async function writeFileToDir(dirHandle, filename, blob, courseFolder) {
+    let target = dirHandle;
+    if (courseFolder) target = await dirHandle.getDirectoryHandle(courseFolder, { create: true });
+    const fileHandle = await target.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  // 交付 blob：目录可用 → 写入；否则 objectURL 原生下载
+  async function deliverBlob(dirHandle, settings, course, blob, filename) {
+    if (!dirHandle) {
+      const url = URL.createObjectURL(blob);
+      await triggerDownload(url, filename);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      return;
+    }
+    const courseFolder = settings.categorize ? Logic.courseFolderName(course.courseName, course.className) : null;
+    await writeFileToDir(dirHandle, filename, blob, courseFolder);
+  }
+
+  // 统一下载核心（Task：浏览窗口两级复用）：files 来自 collectSelection 或行 dataset；批次决策目录路由
   async function downloadFiles(files, mark) {
     let ok = 0, fail = 0;
+    const dirHandle = await saveDirReady();
+    const settings = Settings.load();
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       const r = f.resource;
@@ -775,23 +1029,45 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
       if (mark) mark(i, '下载中…', '#08f');
       try {
         if (r.type === 'img') {
-          const skipped = await exportSlidesPdf(
-            { classroomId: f.classroomId, leafId: r.resourceId, name: r.name },
+          const { blob, failed } = await buildSlidesPdfBlob(
+            { classroomId: f.classroomId, leafId: r.resourceId },
             (done, total) => { if (mark) mark(i, '拉取图片 ' + done + '/' + total, '#08f'); }
           );
+          const filename = Logic.sanitizeFilename(r.name) + '.pdf';
+          await deliverBlob(dirHandle, settings, { courseName: f.courseName, className: f.className }, blob, filename);
           ok++;
-          if (mark) mark(i, skipped > 0 ? '✓（' + skipped + ' 页失败）' : '✓', '#2e8b57');
+          if (mark) mark(i, failed > 0 ? '✓（' + failed + ' 页失败）' : '✓', '#2e8b57');
         } else if (r.url) {
-          await triggerDownload(r.url, r.name);
-          ok++;
-          if (mark) mark(i, '✓', '#2e8b57');
+          const filename = directFilename(r.name, r.url, r.type);
+          if (dirHandle) {
+            // 目录模式：fetch 写入；CORS 拦截 → 回退原生
+            const blob = await fetchAsBlob(r.url).catch(() => null);
+            if (blob) {
+              await deliverBlob(dirHandle, settings, { courseName: f.courseName, className: f.className }, blob, filename);
+              ok++;
+              if (mark) mark(i, '✓', '#2e8b57');
+            } else {
+              await triggerDownload(r.url, filename);
+              ok++;
+              if (mark) mark(i, '✓', '#2e8b57');
+            }
+          } else {
+            await triggerDownload(r.url, filename);
+            ok++;
+            if (mark) mark(i, '✓', '#2e8b57');
+          }
         } else {
           throw new Error('无下载地址');
         }
       } catch (e) {
         fail++;
-        console.warn('[雨课堂PPT下载器] 下载失败：' + r.name + ' — ' + e.message);
-        if (mark) mark(i, '失败', '#c00');
+        if (e && e.isNoCourseware) {
+          console.warn('[雨课堂PPT下载器] 此课堂无文件：' + r.name);
+          if (mark) mark(i, '此课堂无文件', '#999');
+        } else {
+          console.warn('[雨课堂PPT下载器] 下载失败：' + r.name + ' — ' + e.message);
+          if (mark) mark(i, '失败', '#c00');
+        }
       }
       await sleep(800);
     }
@@ -892,20 +1168,18 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     return { pages, failed };
   }
 
-  // 编排：API 懒加载链 → 拉取页面 → 合成 PDF → Blob 下载；返回跳过的失败页数
-  async function exportSlidesPdf({ classroomId, leafId, name }, onProgress) {
+  // 编排：API 懒加载链 → 拉取页面 → 合成 PDF；返回 { blob, failed }
+  async function buildSlidesPdfBlob({ classroomId, leafId }, onProgress) {
     const leafInfo = await Api.fetchLeafInfo(classroomId, leafId, uvIdFromCookie());
+    if (!leafInfo.courseware_id) throw Logic.coursewareNoFileError();
     const review = await Api.fetchReview(leafInfo.courseware_id);
+    if (!review || !review.timelineList || !review.timelineList.length) throw Logic.coursewareNoFileError();
     const presentationId = review.timelineList[0].presentationId;
     const slideList = await Api.fetchPpt(leafInfo.courseware_id, presentationId);
-    if (!slideList || !slideList.length) throw new Error('课件无分片图片');
+    if (!slideList || !slideList.length) throw Logic.coursewareNoFileError();
     const { pages, failed } = await fetchSlidePages(slideList, onProgress);
     const pdf = Logic.buildSlidesPdf(pages);
-    const blob = new Blob([pdf], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    await triggerDownload(url, Logic.sanitizeFilename(name) + '.pdf');
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    return failed;
+    return { blob: new Blob([pdf], { type: 'application/pdf' }), failed };
   }
 
   function keepAlive() {
