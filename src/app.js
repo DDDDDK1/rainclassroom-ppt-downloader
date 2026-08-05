@@ -588,7 +588,7 @@
     const catSection = document.createElement('div');
     catSection.style.cssText = 'margin-bottom:16px';
     const catLabel = document.createElement('div');
-    catLabel.textContent = '🗂 分类下载';
+    catLabel.textContent = '📂 分类下载';
     const catRow = document.createElement('label');
     catRow.style.cssText = 'display:flex;align-items:center;gap:8px';
     const catCb = document.createElement('input');
