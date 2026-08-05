@@ -302,7 +302,7 @@
       .rcppt-count{color:#999;font-size:12px}
       .rcppt-status-line{padding:4px 0;font-size:13px}
       .rcppt-course{cursor:pointer}
-      .rcppt-row input[type=checkbox]{-webkit-appearance:auto;appearance:auto;width:16px;height:16px;margin:0;flex:none;opacity:1;position:static}
+      .rcppt-panel input[type=checkbox]{-webkit-appearance:auto;appearance:auto;width:16px;height:16px;margin:0;flex:none;opacity:1;position:static}
     `;
     document.head.appendChild(style);
   }
