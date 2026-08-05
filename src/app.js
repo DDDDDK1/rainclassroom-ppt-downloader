@@ -284,7 +284,7 @@
       .rcppt-btn[disabled]{opacity:.6;cursor:not-allowed}
       .rcppt-mask{position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.45)}
       .rcppt-panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
-        z-index:2147483647;width:640px;max-width:92vw;max-height:80vh;overflow:auto;
+        z-index:2147483647;width:640px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;
         background:#fff;border-radius:10px;padding:16px;font-size:14px;color:#222}
       .rcppt-row{display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid #eee}
       .rcppt-badge{padding:1px 6px;border-radius:4px;font-size:12px;color:#fff}
@@ -292,8 +292,11 @@
       .rcppt-badge.img{background:#999}
       .rcppt-row.selected{background:#e8f3ff;box-shadow:inset 3px 0 0 #0088ff}
       .rcppt-badge.new{background:#f5a623}
-      .rcppt-browse-top{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-weight:600}
+      .rcppt-browse-top{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-weight:600;flex:none}
       .rcppt-browse-top .rcppt-scan{margin-left:auto;font-weight:400}
+      .rcppt-browse-title{margin-right:auto;font-weight:600}
+      .rcppt-list{flex:1;min-height:0;overflow:auto}
+      .rcppt-bottom{flex:none;display:flex;gap:8px;margin-top:12px}
       .rcppt-empty{text-align:center;padding:28px 0;color:#888}
       .rcppt-notice{padding:8px 10px;background:#fff8e1;border:1px solid #ffd54f;border-radius:6px;margin-bottom:8px;color:#6d4c00}
       .rcppt-count{color:#999;font-size:12px}
@@ -331,12 +334,17 @@
     const top = document.createElement('div');
     top.className = 'rcppt-browse-top';
     const title = document.createElement('span');
+    title.className = 'rcppt-browse-title';
     title.textContent = '📚 已扫描课件';
     const btnScan = document.createElement('button');
     btnScan.className = 'rcppt-scan';
     btnScan.textContent = '扫描';
     btnScan.addEventListener('click', () => scanAndRefresh(panel, btnScan));
-    top.append(title, btnScan);
+    const btnSettings = document.createElement('button');
+    btnSettings.textContent = '⚙';
+    btnSettings.title = '设置';
+    btnSettings.addEventListener('click', renderSettings);
+    top.append(title, btnScan, btnSettings);
     panel.appendChild(top);
 
     if (notice) {
@@ -347,6 +355,8 @@
     }
 
     if (!browseCache.courses.length) {
+      const list = document.createElement('div');
+      list.className = 'rcppt-list';
       const empty = document.createElement('div');
       empty.className = 'rcppt-empty';
       empty.textContent = '暂无已扫描课件';
@@ -354,9 +364,11 @@
       btnStart.className = 'rcppt-scan';
       btnStart.textContent = '开始扫描';
       btnStart.addEventListener('click', () => scanAndRefresh(panel, btnStart));
-      panel.append(empty, btnStart);
+      list.append(empty, btnStart);
+      panel.appendChild(list);
     } else {
       const list = document.createElement('div');
+      list.className = 'rcppt-list';
       browseCache.courses.forEach((course, i) => {
         const row = document.createElement('div');
         row.className = 'rcppt-row rcppt-course';
@@ -384,6 +396,7 @@
     }
 
     const bar = document.createElement('div');
+    bar.className = 'rcppt-bottom';
     const btnSelectAll = document.createElement('button');
     btnSelectAll.textContent = '全选';
     btnSelectAll.addEventListener('click', () => {
@@ -394,13 +407,10 @@
     const btnDownload = document.createElement('button');
     btnDownload.textContent = '下载选中';
     btnDownload.addEventListener('click', () => onDownloadSelectedCourses(panel));
-    const btnClear = document.createElement('button');
-    btnClear.textContent = '清空缓存';
-    btnClear.addEventListener('click', onClearCache);
     const btnClose = document.createElement('button');
     btnClose.textContent = '关闭';
     btnClose.addEventListener('click', closePanel);
-    bar.append(btnSelectAll, btnDownload, btnClear, btnClose);
+    bar.append(btnSelectAll, btnDownload, btnClose);
     panel.appendChild(bar);
 
     const noticeFooter = document.createElement('div');
@@ -426,11 +436,17 @@
     btnBack.textContent = '← 返回';
     btnBack.addEventListener('click', () => renderCourses());
     const title = document.createElement('span');
+    title.className = 'rcppt-browse-title';
     title.textContent = course.className ? `${course.courseName} (${course.className})` : course.courseName;
-    top.append(btnBack, title);
+    const btnSettings = document.createElement('button');
+    btnSettings.textContent = '⚙';
+    btnSettings.title = '设置';
+    btnSettings.addEventListener('click', renderSettings);
+    top.append(btnBack, title, btnSettings);
     panel.appendChild(top);
 
     const list = document.createElement('div');
+    list.className = 'rcppt-list';
     course.resources.forEach((resource, i) => {
       const row = document.createElement('div');
       row.className = 'rcppt-row';
@@ -462,6 +478,7 @@
     panel.appendChild(list);
 
     const bar = document.createElement('div');
+    bar.className = 'rcppt-bottom';
     const btnSelectAll = document.createElement('button');
     btnSelectAll.textContent = '全选';
     btnSelectAll.addEventListener('click', () => {
@@ -472,13 +489,10 @@
     const btnDownload = document.createElement('button');
     btnDownload.textContent = '下载选中';
     btnDownload.addEventListener('click', () => onDownloadSelectedFiles(panel));
-    const btnClear = document.createElement('button');
-    btnClear.textContent = '清空缓存';
-    btnClear.addEventListener('click', onClearCache);
     const btnClose = document.createElement('button');
     btnClose.textContent = '关闭';
     btnClose.addEventListener('click', closePanel);
-    bar.append(btnSelectAll, btnDownload, btnClear, btnClose);
+    bar.append(btnSelectAll, btnDownload, btnClose);
     panel.appendChild(bar);
 
     mask.appendChild(panel);
@@ -531,6 +545,103 @@
     browseCache = Logic.emptyCache();
     browseNewKeys = new Set();
     renderCourses();
+  }
+
+  function renderSettings() {
+    closePanel();
+    const mask = document.createElement('div');
+    mask.className = 'rcppt-mask';
+    const panel = document.createElement('div');
+    panel.className = 'rcppt-panel';
+    panel.style.width = '440px';
+
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:600;margin-bottom:12px';
+    title.textContent = '⚙ 设置';
+    panel.appendChild(title);
+
+    // 保存目录
+    const dirSection = document.createElement('div');
+    dirSection.style.cssText = 'margin-bottom:16px';
+    const dirLabel = document.createElement('div');
+    dirLabel.textContent = '📂 保存目录';
+    const dirInfo = document.createElement('div');
+    dirInfo.className = 'rcppt-count';
+    dirInfo.textContent = '未选择（下载将保存到浏览器默认目录）';
+    SaveDir.load().then((h) => { if (h) dirInfo.textContent = '当前：' + h.name; }).catch(() => {});
+    const dirBtns = document.createElement('div');
+    const btnPick = document.createElement('button');
+    btnPick.textContent = '选择目录';
+    btnPick.addEventListener('click', onPickDirectory);
+    const btnClearDir = document.createElement('button');
+    btnClearDir.textContent = '清除目录';
+    btnClearDir.addEventListener('click', onClearDirectory);
+    dirBtns.append(btnPick, btnClearDir);
+    dirSection.append(dirLabel, dirInfo, dirBtns);
+    panel.appendChild(dirSection);
+
+    // 分类下载
+    const catSection = document.createElement('div');
+    catSection.style.cssText = 'margin-bottom:16px';
+    const catLabel = document.createElement('div');
+    catLabel.textContent = '🗂 分类下载';
+    const catRow = document.createElement('label');
+    catRow.style.cssText = 'display:flex;align-items:center;gap:8px';
+    const catCb = document.createElement('input');
+    catCb.type = 'checkbox';
+    catCb.checked = Settings.load().categorize;
+    const catText = document.createElement('span');
+    catText.textContent = '按课程自动创建文件夹（课程名（班级名））';
+    catRow.append(catCb, catText);
+    catCb.addEventListener('change', () => Settings.save({ categorize: catCb.checked }));
+    catSection.append(catLabel, catRow);
+    panel.appendChild(catSection);
+    SaveDir.load().then((h) => {
+      if (!h) { catCb.disabled = true; catText.style.color = '#999'; }
+    }).catch(() => { catCb.disabled = true; });
+
+    // 清空缓存
+    const cacheSection = document.createElement('div');
+    cacheSection.style.cssText = 'margin-bottom:16px';
+    const cacheLabel = document.createElement('div');
+    cacheLabel.textContent = '🧹 清空缓存';
+    const btnClear = document.createElement('button');
+    btnClear.textContent = '清空缓存';
+    btnClear.addEventListener('click', onClearCache);
+    cacheSection.append(cacheLabel, btnClear);
+    panel.appendChild(cacheSection);
+
+    // 关闭
+    const bar = document.createElement('div');
+    bar.className = 'rcppt-bottom';
+    const btnClose = document.createElement('button');
+    btnClose.textContent = '关闭';
+    btnClose.addEventListener('click', closePanel);
+    bar.appendChild(btnClose);
+    panel.appendChild(bar);
+
+    mask.appendChild(panel);
+    mask.addEventListener('click', (e) => { if (e.target === mask) closePanel(); });
+    document.body.append(mask, panel);
+  }
+
+  async function onPickDirectory() {
+    if (typeof window.showDirectoryPicker !== 'function') {
+      alert('当前浏览器不支持自定义保存目录（需 Chrome/Edge）');
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker();
+      await SaveDir.store(handle);
+      renderSettings(); // 重渲染刷新「当前：目录名」
+    } catch (e) {
+      if (e && e.name !== 'AbortError') alert('选择目录失败：' + (e.message || e));
+    }
+  }
+
+  async function onClearDirectory() {
+    await SaveDir.clear();
+    renderSettings();
   }
 
   // 窗口内扫描：复用 runScan → 刷新列表 + 会话「新」徽标 + 横幅
