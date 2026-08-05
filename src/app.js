@@ -813,8 +813,13 @@
         }
       } catch (e) {
         fail++;
-        console.warn('[雨课堂PPT下载器] 下载失败：' + r.name + ' — ' + e.message);
-        if (mark) mark(i, '失败', '#c00');
+        if (e && e.isNoCourseware) {
+          console.warn('[雨课堂PPT下载器] 此课堂无文件：' + r.name);
+          if (mark) mark(i, '此课堂无文件', '#999');
+        } else {
+          console.warn('[雨课堂PPT下载器] 下载失败：' + r.name + ' — ' + e.message);
+          if (mark) mark(i, '失败', '#c00');
+        }
       }
       await sleep(800);
     }
@@ -918,10 +923,12 @@
   // 编排：API 懒加载链 → 拉取页面 → 合成 PDF；返回 { blob, failed }
   async function buildSlidesPdfBlob({ classroomId, leafId }, onProgress) {
     const leafInfo = await Api.fetchLeafInfo(classroomId, leafId, uvIdFromCookie());
+    if (!leafInfo.courseware_id) throw Logic.coursewareNoFileError();
     const review = await Api.fetchReview(leafInfo.courseware_id);
+    if (!review || !review.timelineList || !review.timelineList.length) throw Logic.coursewareNoFileError();
     const presentationId = review.timelineList[0].presentationId;
     const slideList = await Api.fetchPpt(leafInfo.courseware_id, presentationId);
-    if (!slideList || !slideList.length) throw new Error('课件无分片图片');
+    if (!slideList || !slideList.length) throw Logic.coursewareNoFileError();
     const { pages, failed } = await fetchSlidePages(slideList, onProgress);
     const pdf = Logic.buildSlidesPdf(pages);
     return { blob: new Blob([pdf], { type: 'application/pdf' }), failed };
