@@ -595,7 +595,7 @@
     catCb.type = 'checkbox';
     catCb.checked = Settings.load().categorize;
     const catText = document.createElement('span');
-    catText.textContent = '按课程自动创建文件夹（课程名（班级名））';
+    catText.textContent = '按课程自动创建文件夹';
     const catHint = document.createElement('span');
     catHint.className = 'rcppt-count';
     catRow.append(catCb, catText, catHint);
