@@ -471,6 +471,8 @@
       row.dataset.name = resource.name;
       row.dataset.type = resource.type;
       row.dataset.classroomId = course.classroomId;
+      row.dataset.courseName = course.courseName;
+      row.dataset.className = course.className || '';
       row.dataset.leafId = resource.resourceId;
       cb.addEventListener('change', () => row.classList.toggle('selected', cb.checked));
       list.appendChild(row);
@@ -529,6 +531,8 @@
     if (!rows.length) { alert('未勾选任何文件'); return; }
     const files = rows.map((row) => ({
       classroomId: row.dataset.classroomId,
+      courseName: row.dataset.courseName,
+      className: row.dataset.className,
       resource: {
         resourceId: row.dataset.leafId,
         name: row.dataset.name,
@@ -709,9 +713,67 @@
     });
   }
 
-  // 统一下载核心（Task：浏览窗口两级复用）：files 来自 collectSelection 或行 dataset
+  // 直链文件名：从 URL 推导；无扩展名按类型补全（修复待办 #7）
+  function urlBase(url) {
+    try {
+      const u = new URL(url);
+      const last = u.pathname.split('/').filter(Boolean).pop() || '';
+      return decodeURIComponent(last);
+    } catch (e) { return ''; }
+  }
+  function directFilename(name, url, type) {
+    let base = Logic.sanitizeFilename(name || urlBase(url) || 'courseware');
+    if (!/\.(pdf|pptx|ppt)$/i.test(base)) base += type === 'pptx' ? '.pptx' : '.pdf';
+    return base;
+  }
+
+  async function fetchAsBlob(url) {
+    const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.blob();
+  }
+
+  // 目录句柄是否可用（含授权）；不可用返回 null（无 showDirectoryPicker / 无句柄 / 授权被拒）
+  async function saveDirReady() {
+    if (typeof window.showDirectoryPicker !== 'function') return null;
+    let handle;
+    try { handle = await SaveDir.load(); } catch (e) { return null; }
+    if (!handle) return null;
+    try {
+      const opts = { mode: 'readwrite' };
+      let perm = await handle.queryPermission(opts);
+      if (perm !== 'granted') perm = await handle.requestPermission(opts);
+      return perm === 'granted' ? handle : null;
+    } catch (e) { return null; }
+  }
+
+  // FileSystem 写入：分类时先建课程子文件夹
+  async function writeFileToDir(dirHandle, filename, blob, courseFolder) {
+    let target = dirHandle;
+    if (courseFolder) target = await dirHandle.getDirectoryHandle(courseFolder, { create: true });
+    const fileHandle = await target.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  // 交付 blob：目录可用 → 写入；否则 objectURL 原生下载
+  async function deliverBlob(dirHandle, settings, course, blob, filename) {
+    if (!dirHandle) {
+      const url = URL.createObjectURL(blob);
+      await triggerDownload(url, filename);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      return;
+    }
+    const courseFolder = settings.categorize ? Logic.courseFolderName(course.courseName, course.className) : null;
+    await writeFileToDir(dirHandle, filename, blob, courseFolder);
+  }
+
+  // 统一下载核心（Task：浏览窗口两级复用）：files 来自 collectSelection 或行 dataset；批次决策目录路由
   async function downloadFiles(files, mark) {
     let ok = 0, fail = 0;
+    const dirHandle = await saveDirReady();
+    const settings = Settings.load();
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       const r = f.resource;
@@ -719,16 +781,33 @@
       if (mark) mark(i, '下载中…', '#08f');
       try {
         if (r.type === 'img') {
-          const skipped = await exportSlidesPdf(
-            { classroomId: f.classroomId, leafId: r.resourceId, name: r.name },
+          const { blob, failed } = await buildSlidesPdfBlob(
+            { classroomId: f.classroomId, leafId: r.resourceId },
             (done, total) => { if (mark) mark(i, '拉取图片 ' + done + '/' + total, '#08f'); }
           );
+          const filename = Logic.sanitizeFilename(r.name) + '.pdf';
+          await deliverBlob(dirHandle, settings, { courseName: f.courseName, className: f.className }, blob, filename);
           ok++;
-          if (mark) mark(i, skipped > 0 ? '✓（' + skipped + ' 页失败）' : '✓', '#2e8b57');
+          if (mark) mark(i, failed > 0 ? '✓（' + failed + ' 页失败）' : '✓', '#2e8b57');
         } else if (r.url) {
-          await triggerDownload(r.url, r.name);
-          ok++;
-          if (mark) mark(i, '✓', '#2e8b57');
+          const filename = directFilename(r.name, r.url, r.type);
+          if (dirHandle) {
+            // 目录模式：fetch 写入；CORS 拦截 → 回退原生
+            const blob = await fetchAsBlob(r.url).catch(() => null);
+            if (blob) {
+              await deliverBlob(dirHandle, settings, { courseName: f.courseName, className: f.className }, blob, filename);
+              ok++;
+              if (mark) mark(i, '✓', '#2e8b57');
+            } else {
+              await triggerDownload(r.url, filename);
+              ok++;
+              if (mark) mark(i, '✓', '#2e8b57');
+            }
+          } else {
+            await triggerDownload(r.url, filename);
+            ok++;
+            if (mark) mark(i, '✓', '#2e8b57');
+          }
         } else {
           throw new Error('无下载地址');
         }
@@ -836,8 +915,8 @@
     return { pages, failed };
   }
 
-  // 编排：API 懒加载链 → 拉取页面 → 合成 PDF → Blob 下载；返回跳过的失败页数
-  async function exportSlidesPdf({ classroomId, leafId, name }, onProgress) {
+  // 编排：API 懒加载链 → 拉取页面 → 合成 PDF；返回 { blob, failed }
+  async function buildSlidesPdfBlob({ classroomId, leafId }, onProgress) {
     const leafInfo = await Api.fetchLeafInfo(classroomId, leafId, uvIdFromCookie());
     const review = await Api.fetchReview(leafInfo.courseware_id);
     const presentationId = review.timelineList[0].presentationId;
@@ -845,11 +924,7 @@
     if (!slideList || !slideList.length) throw new Error('课件无分片图片');
     const { pages, failed } = await fetchSlidePages(slideList, onProgress);
     const pdf = Logic.buildSlidesPdf(pages);
-    const blob = new Blob([pdf], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    await triggerDownload(url, Logic.sanitizeFilename(name) + '.pdf');
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    return failed;
+    return { blob: new Blob([pdf], { type: 'application/pdf' }), failed };
   }
 
   function keepAlive() {
