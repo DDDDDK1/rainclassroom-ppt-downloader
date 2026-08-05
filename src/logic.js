@@ -146,6 +146,19 @@ const RCLogic = (function () {
     throw new Error('未找到 JPEG SOF 段');
   }
 
+  // 分类下载：课程文件夹名（净化后；有班级名时用全角括号拼接）
+  function courseFolderName(courseName, className) {
+    const base = className ? `${courseName}（${className}）` : courseName;
+    return sanitizeFilename(base);
+  }
+
+  // 无文件错误工厂：供下载链路识别「此课堂无文件」
+  function coursewareNoFileError() {
+    const err = new Error('此课堂无文件');
+    err.isNoCourseware = true;
+    return err;
+  }
+
   // 手写极简 PDF 写入器：每页一张全幅 JPEG，页尺寸统一为 pages[0]
   function buildSlidesPdf(pages) {
     if (!Array.isArray(pages) || !pages.length) throw new Error('无可合成页面');
@@ -224,6 +237,8 @@ const RCLogic = (function () {
     sanitizeFilename,
     jpegDimensions,
     buildSlidesPdf,
+    courseFolderName,
+    coursewareNoFileError,
     // 后续任务填充：buildCache
   };
 })();
