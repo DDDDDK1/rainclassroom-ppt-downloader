@@ -38,8 +38,7 @@
 1. 打开脚本发布页：<https://greasyfork.org/zh-CN/scripts/589891>
 2. 点击页面右侧绿色的 **「安装此脚本」** 按钮。
 3. Tampermonkey 弹出安装确认页，点击 **「安装」** 即可。
-
-> 此方式最省事、无乱码问题；以后脚本更新由 Tampermonkey 自动检查更新（更新源为 Greasy Fork）。
+=
 
 **方式二：手动粘贴安装（备选）**
 
