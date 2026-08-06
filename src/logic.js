@@ -118,6 +118,15 @@ const RCLogic = (function () {
     return result;
   }
 
+  // 课程是否"新增课程"：该课程下至少一个资源命中会话级 newKeys
+  // key 格式与 collectSelection / app.js keyOf 一致：courseId:classroomId:resourceId
+  function courseHasNew(course, newKeys) {
+    if (!course || !Array.isArray(course.resources) || !(newKeys instanceof Set)) return false;
+    return course.resources.some(
+      (r) => r && newKeys.has(`${course.courseId}:${course.classroomId}:${r.resourceId}`)
+    );
+  }
+
   // 文件名净化：过滤 Windows/跨平台非法字符（Task：前端合成 PDF）
   function sanitizeFilename(name) {
     const s = String(name || '').replace(/[\/\\:*?"<>|]/g, '_').trim();
@@ -234,6 +243,7 @@ const RCLogic = (function () {
     classifyResource,
     diffCourses,
     collectSelection,
+    courseHasNew,
     sanitizeFilename,
     jpegDimensions,
     buildSlidesPdf,
