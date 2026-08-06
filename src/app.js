@@ -499,13 +499,25 @@
         if (!cb.disabled) { cb.checked = true; cb.dispatchEvent(new Event('change')); }
       });
     });
+    const btnSelectNew = document.createElement('button');
+    btnSelectNew.textContent = '选中新增';
+    btnSelectNew.addEventListener('click', () => {
+      panel.querySelectorAll('.rcppt-row input[type=checkbox]').forEach((cb) => {
+        if (cb.disabled) return;
+        const resource = course.resources[Number(cb.dataset.index)];
+        if (resource && browseNewKeys.has(keyOf(course, resource))) {
+          cb.checked = true;
+          cb.dispatchEvent(new Event('change')); // 触发选中高亮，与「全选」一致
+        }
+      });
+    });
     const btnDownload = document.createElement('button');
     btnDownload.textContent = '下载选中';
     btnDownload.addEventListener('click', () => onDownloadSelectedFiles(panel));
     const btnClose = document.createElement('button');
     btnClose.textContent = '关闭';
     btnClose.addEventListener('click', closePanel);
-    bar.append(btnSelectAll, btnDownload, btnClose);
+    bar.append(btnSelectAll, btnSelectNew, btnDownload, btnClose);
     panel.appendChild(bar);
 
     mask.appendChild(panel);
