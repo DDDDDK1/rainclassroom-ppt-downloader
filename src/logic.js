@@ -134,6 +134,80 @@ const RCLogic = (function () {
     return collectSelection(cache, null, refs);
   }
 
+  // ===== 扫描历史：每次有新增的扫描存一条文件快照（新在前，封顶 HISTORY_MAX） =====
+  const HISTORY_VERSION = 1;
+  const HISTORY_MAX = 100;
+
+  function emptyHistory() {
+    return { version: HISTORY_VERSION, items: [] };
+  }
+
+  function historyCourseCount(files) {
+    const s = new Set();
+    for (const f of files) if (f && f.courseId && f.classroomId) s.add(f.courseId + ':' + f.classroomId);
+    return s.size;
+  }
+
+  function historyFileValid(f) {
+    return !!(f && f.courseId && f.classroomId && f.resource && f.resource.resourceId);
+  }
+
+  function parseHistory(raw) {
+    try {
+      const data = JSON.parse(raw);
+      if (!data || data.version !== HISTORY_VERSION || !Array.isArray(data.items)) return emptyHistory();
+      const items = [];
+      for (const it of data.items) {
+        if (!it || typeof it.ts !== 'number' || !Array.isArray(it.files)) continue;
+        const files = it.files.filter(historyFileValid);
+        if (!files.length) continue;
+        items.push({ ts: it.ts, files, fileCount: files.length, courseCount: historyCourseCount(files) });
+      }
+      return { version: HISTORY_VERSION, items };
+    } catch (e) {
+      return emptyHistory();
+    }
+  }
+
+  function serializeHistory(h) {
+    return JSON.stringify(h);
+  }
+
+  function appendHistory(h, record) {
+    const base = (h && h.version) || HISTORY_VERSION;
+    const items = [record].concat((h && Array.isArray(h.items) ? h.items : []));
+    if (items.length > HISTORY_MAX) items.length = HISTORY_MAX;
+    return { version: base, items };
+  }
+
+  // 扫描 diff → 历史快照记录；裁剪掉 leafInfo 等大字段；无有效新增返回 null（不记）
+  function snapshotHistoryRecord(addedResources, ts) {
+    if (!Array.isArray(addedResources)) return null;
+    const files = [];
+    for (const a of addedResources) {
+      if (!historyFileValid(a)) continue;
+      files.push({
+        courseId: a.courseId,
+        classroomId: a.classroomId,
+        courseName: a.courseName,
+        className: a.className,
+        resource: {
+          resourceId: a.resource.resourceId,
+          name: a.resource.name,
+          type: a.resource.type,
+          url: a.resource.url
+        }
+      });
+    }
+    if (!files.length) return null;
+    return {
+      ts: typeof ts === 'number' ? ts : Date.now(),
+      files,
+      fileCount: files.length,
+      courseCount: historyCourseCount(files)
+    };
+  }
+
   // 文件名净化：过滤 Windows/跨平台非法字符（Task：前端合成 PDF）
   function sanitizeFilename(name) {
     const s = String(name || '').replace(/[\/\\:*?"<>|]/g, '_').trim();
@@ -251,6 +325,11 @@ const RCLogic = (function () {
     diffCourses,
     collectSelection,
     collectNewFiles,
+    emptyHistory,
+    parseHistory,
+    serializeHistory,
+    appendHistory,
+    snapshotHistoryRecord,
     sanitizeFilename,
     jpegDimensions,
     buildSlidesPdf,
