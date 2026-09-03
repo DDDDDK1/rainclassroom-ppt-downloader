@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         长江雨课堂PPT下载器
 // @namespace    https://github.com/DDDDDK1/rainclassroom-ppt-downloader
-// @version      1.5.0
+// @version      1.6.0
 // @description  便捷下载长江雨课堂中的PPT课件（增量检测）
 // @author       DDDDDK1
 // @homepageURL  https://github.com/DDDDDK1/rainclassroom-ppt-downloader
@@ -149,6 +149,80 @@ const RCLogic = (function () {
     return collectSelection(cache, null, refs);
   }
 
+  // ===== 扫描历史：每次有新增的扫描存一条文件快照（新在前，封顶 HISTORY_MAX） =====
+  const HISTORY_VERSION = 1;
+  const HISTORY_MAX = 100;
+
+  function emptyHistory() {
+    return { version: HISTORY_VERSION, items: [] };
+  }
+
+  function historyCourseCount(files) {
+    const s = new Set();
+    for (const f of files) if (f && f.courseId && f.classroomId) s.add(f.courseId + ':' + f.classroomId);
+    return s.size;
+  }
+
+  function historyFileValid(f) {
+    return !!(f && f.courseId && f.classroomId && f.resource && f.resource.resourceId);
+  }
+
+  function parseHistory(raw) {
+    try {
+      const data = JSON.parse(raw);
+      if (!data || data.version !== HISTORY_VERSION || !Array.isArray(data.items)) return emptyHistory();
+      const items = [];
+      for (const it of data.items) {
+        if (!it || typeof it.ts !== 'number' || !Array.isArray(it.files)) continue;
+        const files = it.files.filter(historyFileValid);
+        if (!files.length) continue;
+        items.push({ ts: it.ts, files, fileCount: files.length, courseCount: historyCourseCount(files) });
+      }
+      return { version: HISTORY_VERSION, items };
+    } catch (e) {
+      return emptyHistory();
+    }
+  }
+
+  function serializeHistory(h) {
+    return JSON.stringify(h);
+  }
+
+  function appendHistory(h, record) {
+    const base = (h && h.version) || HISTORY_VERSION;
+    const items = [record].concat((h && Array.isArray(h.items) ? h.items : []));
+    if (items.length > HISTORY_MAX) items.length = HISTORY_MAX;
+    return { version: base, items };
+  }
+
+  // 扫描 diff → 历史快照记录；裁剪掉 leafInfo 等大字段；无有效新增返回 null（不记）
+  function snapshotHistoryRecord(addedResources, ts) {
+    if (!Array.isArray(addedResources)) return null;
+    const files = [];
+    for (const a of addedResources) {
+      if (!historyFileValid(a)) continue;
+      files.push({
+        courseId: a.courseId,
+        classroomId: a.classroomId,
+        courseName: a.courseName,
+        className: a.className,
+        resource: {
+          resourceId: a.resource.resourceId,
+          name: a.resource.name,
+          type: a.resource.type,
+          url: a.resource.url
+        }
+      });
+    }
+    if (!files.length) return null;
+    return {
+      ts: typeof ts === 'number' ? ts : Date.now(),
+      files,
+      fileCount: files.length,
+      courseCount: historyCourseCount(files)
+    };
+  }
+
   // 文件名净化：过滤 Windows/跨平台非法字符（Task：前端合成 PDF）
   function sanitizeFilename(name) {
     const s = String(name || '').replace(/[\/\\:*?"<>|]/g, '_').trim();
@@ -266,6 +340,11 @@ const RCLogic = (function () {
     diffCourses,
     collectSelection,
     collectNewFiles,
+    emptyHistory,
+    parseHistory,
+    serializeHistory,
+    appendHistory,
+    snapshotHistoryRecord,
     sanitizeFilename,
     jpegDimensions,
     buildSlidesPdf,
@@ -412,6 +491,15 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     load() { return Logic.parseCache(GM_getValue(STORE_KEY, '')); },
     save(cache) { GM_setValue(STORE_KEY, Logic.serializeCache(cache)); },
     clear() { GM_setValue(STORE_KEY, ''); }
+  };
+
+  // 扫描历史独立于课件缓存存储：每次有新增的扫描存一条文件快照，便于回看/重下
+  const HISTORY_KEY = 'rcppt_history_v1';
+
+  const History = {
+    load() { return Logic.parseHistory(GM_getValue(HISTORY_KEY, '')); },
+    save(h) { GM_setValue(HISTORY_KEY, Logic.serializeHistory(h)); },
+    clear() { GM_setValue(HISTORY_KEY, ''); }
   };
 
   // ===== 设置存储：GM 存简单配置，IndexedDB 存目录句柄 =====
@@ -606,11 +694,15 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     btnScan.className = 'rcppt-scan';
     btnScan.textContent = '扫描';
     btnScan.addEventListener('click', () => scanAndRefresh(panel, btnScan));
+    const btnHistory = document.createElement('button');
+    btnHistory.textContent = '历史';
+    btnHistory.title = '扫描历史';
+    btnHistory.addEventListener('click', renderHistory);
     const btnSettings = document.createElement('button');
     btnSettings.textContent = '⚙';
     btnSettings.title = '设置';
     btnSettings.addEventListener('click', renderSettings);
-    top.append(title, btnScan, btnSettings);
+    top.append(title, btnScan, btnHistory, btnSettings);
     panel.appendChild(top);
 
     if (notice) {
@@ -784,10 +876,10 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     document.body.append(mask, panel);
   }
 
-  // 一级「选中新增」：本次全部新增文件的聚合视图（文件级，只含新增件；默认全勾，可逐条取消）
-  // 数据源与「+N 新」/「新」徽标同源（browseNewKeys）；下载复用文件级 onDownloadSelectedFiles
-  function renderNewFiles() {
-    const files = Logic.collectNewFiles(browseCache, browseNewKeys);
+  // 通用「文件列表」视图：一级「选中新增」与历史某次共用
+  // 按 courseId:classroomId 分组、行默认全勾、dataset 与 renderFiles 一致；
+  // 「下载选中」复用文件级 onDownloadSelectedFiles；back 为返回目标渲染函数
+  function renderFileList({ title, files, emptyText, back }) {
     closePanel();
     const mask = document.createElement('div');
     mask.className = 'rcppt-mask';
@@ -798,11 +890,11 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     top.className = 'rcppt-browse-top';
     const btnBack = document.createElement('button');
     btnBack.textContent = '← 返回';
-    btnBack.addEventListener('click', renderCourses);
-    const title = document.createElement('span');
-    title.className = 'rcppt-browse-title';
-    title.textContent = files.length ? `新增课件（${files.length}）` : '新增课件';
-    top.append(btnBack, title);
+    btnBack.addEventListener('click', back);
+    const titleEl = document.createElement('span');
+    titleEl.className = 'rcppt-browse-title';
+    titleEl.textContent = title;
+    top.append(btnBack, titleEl);
     panel.appendChild(top);
 
     const list = document.createElement('div');
@@ -810,13 +902,13 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     if (!files.length) {
       const empty = document.createElement('div');
       empty.className = 'rcppt-empty';
-      empty.textContent = '暂无新增课件';
+      empty.textContent = emptyText || '暂无文件';
       list.appendChild(empty);
     } else {
       let groupKey = '';
       files.forEach((f, i) => {
         const key = f.courseId + ':' + f.classroomId;
-        if (key !== groupKey) { // 分组头（保 cache 顺序）
+        if (key !== groupKey) { // 分组头（保 files 顺序）
           groupKey = key;
           const g = document.createElement('div');
           g.className = 'rcppt-group';
@@ -864,13 +956,100 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     }
     const btnBackBar = document.createElement('button');
     btnBackBar.textContent = '返回';
-    btnBackBar.addEventListener('click', renderCourses);
+    btnBackBar.addEventListener('click', back);
     bar.appendChild(btnBackBar);
     panel.appendChild(bar);
 
     mask.appendChild(panel);
     mask.addEventListener('click', (e) => { if (e.target === mask) closePanel(); });
     document.body.append(mask, panel);
+  }
+
+  // 一级「选中新增」：本次全部新增文件的聚合视图（文件级，只含新增件）
+  // 数据源与「+N 新」/「新」徽标同源（browseNewKeys）
+  function renderNewFiles() {
+    const files = Logic.collectNewFiles(browseCache, browseNewKeys);
+    renderFileList({
+      title: files.length ? `新增课件（${files.length}）` : '新增课件',
+      files,
+      emptyText: '暂无新增课件',
+      back: renderCourses
+    });
+  }
+
+  // YYYY-MM-DD HH:mm（本地时区，pad 补零）
+  function formatTs(ts) {
+    const d = new Date(ts);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  // 一级「历史」：扫描记录列表（新在前）；点行进入该次新增文件视图
+  function renderHistory() {
+    const history = History.load();
+    closePanel();
+    const mask = document.createElement('div');
+    mask.className = 'rcppt-mask';
+    const panel = document.createElement('div');
+    panel.className = 'rcppt-panel';
+
+    const top = document.createElement('div');
+    top.className = 'rcppt-browse-top';
+    const btnBack = document.createElement('button');
+    btnBack.textContent = '← 返回';
+    btnBack.addEventListener('click', renderCourses);
+    const title = document.createElement('span');
+    title.className = 'rcppt-browse-title';
+    title.textContent = '📜 扫描历史';
+    top.append(btnBack, title);
+    panel.appendChild(top);
+
+    const list = document.createElement('div');
+    list.className = 'rcppt-list';
+    if (!history.items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'rcppt-empty';
+      empty.textContent = '暂无扫描记录（每次有新增的扫描会自动记录）';
+      list.appendChild(empty);
+    } else {
+      history.items.forEach((rec) => {
+        const row = document.createElement('div');
+        row.className = 'rcppt-row rcppt-course';
+        const time = document.createElement('span');
+        time.style.fontWeight = '600';
+        time.textContent = formatTs(rec.ts);
+        const meta = document.createElement('span');
+        meta.className = 'rcppt-count';
+        meta.style.marginLeft = 'auto';
+        meta.textContent = `新增 ${rec.fileCount} 个文件 · ${rec.courseCount} 门课`;
+        row.append(time, meta);
+        row.addEventListener('click', () => renderHistoryFiles(rec));
+        list.appendChild(row);
+      });
+    }
+    panel.appendChild(list);
+
+    const bar = document.createElement('div');
+    bar.className = 'rcppt-bottom';
+    const btnClose = document.createElement('button');
+    btnClose.textContent = '关闭';
+    btnClose.addEventListener('click', closePanel);
+    bar.appendChild(btnClose);
+    panel.appendChild(bar);
+
+    mask.appendChild(panel);
+    mask.addEventListener('click', (e) => { if (e.target === mask) closePanel(); });
+    document.body.append(mask, panel);
+  }
+
+  // 历史某次的新增文件：复用通用文件列表视图（记录即快照，独立于当前缓存）
+  function renderHistoryFiles(rec) {
+    renderFileList({
+      title: `${formatTs(rec.ts)} 新增课件（${rec.files.length}）`,
+      files: rec.files,
+      emptyText: '该记录暂无文件',
+      back: renderHistory
+    });
   }
 
   // 第一级：勾选课程 → 批量下载该课全部文件
@@ -917,6 +1096,7 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
   function onClearCache() {
     if (!confirm('确定清空缓存？该操作不可撤销，下次扫描将全量重新检测。')) return;
     Store.clear();
+    History.clear(); // 清空缓存同时清空扫描历史（用户已确认）
     browseCache = Logic.emptyCache();
     browseNewKeys = new Set();
     renderCourses();
@@ -1034,6 +1214,9 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
       diff.addedResources.forEach((item) => {
         browseNewKeys.add(`${item.courseId}:${item.classroomId}:${item.resource.resourceId}`);
       });
+      // 有新增 → 入历史（文件快照，仅记录本次新增），供一级「历史」回看/重下
+      const historyRec = Logic.snapshotHistoryRecord(diff.addedResources, Date.now());
+      if (historyRec) History.save(Logic.appendHistory(History.load(), historyRec));
       let notice = diff.addedResourceCount
         ? `发现 ${diff.addedResourceCount} 个新课件 / 来自 ${diff.addedCourseCount} 门课`
         : '无新增课件';
