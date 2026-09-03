@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         长江雨课堂PPT下载器
 // @namespace    https://github.com/DDDDDK1/rainclassroom-ppt-downloader
-// @version      1.4.0
+// @version      1.5.0
 // @description  便捷下载长江雨课堂中的PPT课件（增量检测）
 // @author       DDDDDK1
 // @homepageURL  https://github.com/DDDDDK1/rainclassroom-ppt-downloader
@@ -133,13 +133,20 @@ const RCLogic = (function () {
     return result;
   }
 
-  // 课程是否"新增课程"：该课程下至少一个资源命中会话级 newKeys
-  // key 格式与 collectSelection / app.js keyOf 一致：courseId:classroomId:resourceId
-  function courseHasNew(course, newKeys) {
-    if (!course || !Array.isArray(course.resources) || !(newKeys instanceof Set)) return false;
-    return course.resources.some(
-      (r) => r && newKeys.has(`${course.courseId}:${course.classroomId}:${r.resourceId}`)
-    );
+  // 本次扫描新增文件集合（cache 级）：命中会话级 newKeys 的条目按 cache 顺序聚合成 files，
+  // 交给 collectSelection 统一查找/去重/裁剪，返回形状与其一致（含 courseName/className）
+  function collectNewFiles(cache, newKeys) {
+    if (!Array.isArray(cache && cache.courses) || !(newKeys instanceof Set)) return [];
+    const refs = [];
+    for (const c of cache.courses) {
+      if (!c || !c.courseId || !c.classroomId) continue;
+      for (const r of c.resources || []) {
+        if (r && r.resourceId && newKeys.has(`${c.courseId}:${c.classroomId}:${r.resourceId}`)) {
+          refs.push({ courseId: c.courseId, classroomId: c.classroomId, resourceId: r.resourceId });
+        }
+      }
+    }
+    return collectSelection(cache, null, refs);
   }
 
   // 文件名净化：过滤 Windows/跨平台非法字符（Task：前端合成 PDF）
@@ -258,7 +265,7 @@ const RCLogic = (function () {
     classifyResource,
     diffCourses,
     collectSelection,
-    courseHasNew,
+    collectNewFiles,
     sanitizeFilename,
     jpegDimensions,
     buildSlidesPdf,
@@ -560,6 +567,7 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
       .rcppt-count{color:#999;font-size:12px}
       .rcppt-status-line{padding:4px 0;font-size:13px}
       .rcppt-course{cursor:pointer}
+      .rcppt-group{padding:8px 4px 3px;font-size:13px;font-weight:600;color:#0088ff}
       .rcppt-panel input[type=checkbox]{-webkit-appearance:auto;appearance:auto;width:16px;height:16px;margin:0;flex:none;opacity:1;position:static}
     `;
     document.head.appendChild(style);
@@ -664,15 +672,8 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     });
     const btnSelectNew = document.createElement('button');
     btnSelectNew.textContent = '选中新增';
-    btnSelectNew.addEventListener('click', () => {
-      panel.querySelectorAll('.rcppt-row.rcppt-course input[type=checkbox]').forEach((cb) => {
-        const course = browseCache.courses[Number(cb.dataset.index)];
-        if (course && Logic.courseHasNew(course, browseNewKeys)) {
-          cb.checked = true;
-          cb.dispatchEvent(new Event('change')); // 触发选中高亮，与「全选」一致
-        }
-      });
-    });
+    // 一级改文件级：打开「新增课件」聚合列表（只含本次新增件），而非勾选整行课程（那会连带旧课件）
+    btnSelectNew.addEventListener('click', renderNewFiles);
     const btnDownload = document.createElement('button');
     btnDownload.textContent = '下载选中';
     btnDownload.addEventListener('click', () => onDownloadSelectedCourses(panel));
@@ -776,6 +777,95 @@ if (typeof window !== 'undefined') window.RCLogic = RCLogic;
     btnClose.textContent = '关闭';
     btnClose.addEventListener('click', closePanel);
     bar.append(btnSelectAll, btnSelectNew, btnDownload, btnClose);
+    panel.appendChild(bar);
+
+    mask.appendChild(panel);
+    mask.addEventListener('click', (e) => { if (e.target === mask) closePanel(); });
+    document.body.append(mask, panel);
+  }
+
+  // 一级「选中新增」：本次全部新增文件的聚合视图（文件级，只含新增件；默认全勾，可逐条取消）
+  // 数据源与「+N 新」/「新」徽标同源（browseNewKeys）；下载复用文件级 onDownloadSelectedFiles
+  function renderNewFiles() {
+    const files = Logic.collectNewFiles(browseCache, browseNewKeys);
+    closePanel();
+    const mask = document.createElement('div');
+    mask.className = 'rcppt-mask';
+    const panel = document.createElement('div');
+    panel.className = 'rcppt-panel';
+
+    const top = document.createElement('div');
+    top.className = 'rcppt-browse-top';
+    const btnBack = document.createElement('button');
+    btnBack.textContent = '← 返回';
+    btnBack.addEventListener('click', renderCourses);
+    const title = document.createElement('span');
+    title.className = 'rcppt-browse-title';
+    title.textContent = files.length ? `新增课件（${files.length}）` : '新增课件';
+    top.append(btnBack, title);
+    panel.appendChild(top);
+
+    const list = document.createElement('div');
+    list.className = 'rcppt-list';
+    if (!files.length) {
+      const empty = document.createElement('div');
+      empty.className = 'rcppt-empty';
+      empty.textContent = '暂无新增课件';
+      list.appendChild(empty);
+    } else {
+      let groupKey = '';
+      files.forEach((f, i) => {
+        const key = f.courseId + ':' + f.classroomId;
+        if (key !== groupKey) { // 分组头（保 cache 顺序）
+          groupKey = key;
+          const g = document.createElement('div');
+          g.className = 'rcppt-group';
+          g.textContent = f.className ? `${f.courseName}（${f.className}）` : f.courseName;
+          list.appendChild(g);
+        }
+        const row = document.createElement('div');
+        row.className = 'rcppt-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.index = String(i);
+        cb.checked = true;
+        const badge = document.createElement('span');
+        badge.className = 'rcppt-badge ' + f.resource.type;
+        badge.textContent = f.resource.type === 'pdf' ? 'PDF' : f.resource.type === 'pptx' ? 'PPTX' : 'PPT(PDF)';
+        const name = document.createElement('span');
+        name.textContent = f.resource.name;
+        row.append(cb, badge, name);
+        const nb = document.createElement('span');
+        nb.className = 'rcppt-badge new';
+        nb.textContent = '新';
+        row.append(nb);
+        // 下载链路 dataset（与 renderFiles / onDownloadSelectedFiles 一致）
+        row.dataset.url = f.resource.url || '';
+        row.dataset.name = f.resource.name;
+        row.dataset.type = f.resource.type;
+        row.dataset.classroomId = f.classroomId;
+        row.dataset.courseName = f.courseName;
+        row.dataset.className = f.className || '';
+        row.dataset.leafId = f.resource.resourceId;
+        cb.addEventListener('change', () => row.classList.toggle('selected', cb.checked));
+        cb.dispatchEvent(new Event('change')); // 预勾选 → 触发选中高亮
+        list.appendChild(row);
+      });
+    }
+    panel.appendChild(list);
+
+    const bar = document.createElement('div');
+    bar.className = 'rcppt-bottom';
+    if (files.length) {
+      const btnDownload = document.createElement('button');
+      btnDownload.textContent = '下载选中';
+      btnDownload.addEventListener('click', () => onDownloadSelectedFiles(panel));
+      bar.appendChild(btnDownload);
+    }
+    const btnBackBar = document.createElement('button');
+    btnBackBar.textContent = '返回';
+    btnBackBar.addEventListener('click', renderCourses);
+    bar.appendChild(btnBackBar);
     panel.appendChild(bar);
 
     mask.appendChild(panel);

@@ -118,13 +118,20 @@ const RCLogic = (function () {
     return result;
   }
 
-  // 课程是否"新增课程"：该课程下至少一个资源命中会话级 newKeys
-  // key 格式与 collectSelection / app.js keyOf 一致：courseId:classroomId:resourceId
-  function courseHasNew(course, newKeys) {
-    if (!course || !Array.isArray(course.resources) || !(newKeys instanceof Set)) return false;
-    return course.resources.some(
-      (r) => r && newKeys.has(`${course.courseId}:${course.classroomId}:${r.resourceId}`)
-    );
+  // 本次扫描新增文件集合（cache 级）：命中会话级 newKeys 的条目按 cache 顺序聚合成 files，
+  // 交给 collectSelection 统一查找/去重/裁剪，返回形状与其一致（含 courseName/className）
+  function collectNewFiles(cache, newKeys) {
+    if (!Array.isArray(cache && cache.courses) || !(newKeys instanceof Set)) return [];
+    const refs = [];
+    for (const c of cache.courses) {
+      if (!c || !c.courseId || !c.classroomId) continue;
+      for (const r of c.resources || []) {
+        if (r && r.resourceId && newKeys.has(`${c.courseId}:${c.classroomId}:${r.resourceId}`)) {
+          refs.push({ courseId: c.courseId, classroomId: c.classroomId, resourceId: r.resourceId });
+        }
+      }
+    }
+    return collectSelection(cache, null, refs);
   }
 
   // 文件名净化：过滤 Windows/跨平台非法字符（Task：前端合成 PDF）
@@ -243,7 +250,7 @@ const RCLogic = (function () {
     classifyResource,
     diffCourses,
     collectSelection,
-    courseHasNew,
+    collectNewFiles,
     sanitizeFilename,
     jpegDimensions,
     buildSlidesPdf,
